@@ -62,6 +62,19 @@ def sync_workbook_to_supabase(filepath: str, farm_code: str, dsn: str) -> SyncRe
     if "F5_HARVEST_LOG" in wb.sheetnames:
         report.rows_written["harvest_log"] = _sync_harvest_log(
             wb, conn, lists, report.errors)
+    if "06_FEED_INVENTORY" in wb.sheetnames:
+        report.rows_written["feed_inventory"] = _sync_feed_inventory(
+            wb, conn, lists, report.errors)
+    if "05_WEATHER_LOG" in wb.sheetnames:
+        report.rows_written["weather_log"] = _sync_weather_log(wb, conn)
+    if "04_LABOUR_LOG" in wb.sheetnames:
+        report.rows_written["labour_log"] = _sync_labour_log(wb, conn, report.errors)
+    if "02_EXPENSES" in wb.sheetnames:
+        report.rows_written["expenses"] = _sync_expenses(wb, conn, lists, report.errors)
+    if "03_REVENUE" in wb.sheetnames:
+        report.rows_written["revenue"] = _sync_revenue(wb, conn, lists, report.errors)
+    if "07_HEALTH_LOG" in wb.sheetnames:
+        report.rows_written["health_log"] = _sync_health_log(wb, conn, report.errors)
 
     conn.close()
     return report
@@ -123,8 +136,12 @@ STAFF_DROPDOWN_FIELDS = {
     "role": "ROLE",
 }
 
+REVENUE_DROPDOWN_FIELDS = {
+    "payment_status": "PAYMENT_STATUS",
+}
 
-def _validate_dropdowns(table: str, record: dict, key_field: str,
+
+def _validate_dropdowns(table: str, record: dict, row_id: str,
                          dropdown_fields: dict, lists: dict, errors: list) -> bool:
     """Returns True if the record passes all dropdown checks; else appends
     one error per violation to `errors` and returns False."""
@@ -135,11 +152,41 @@ def _validate_dropdowns(table: str, record: dict, key_field: str,
         value = record[field_name]
         if value not in lists[list_name]:
             errors.append({
-                "table": table, "row": record[key_field], "field": field_name,
+                "table": table, "row": row_id, "field": field_name,
                 "value": value, "reason": f"not in 99_LISTS[{list_name}]",
             })
             valid = False
     return valid
+
+
+BATCH_REF_TABLE_BY_DOMAIN = {
+    "piggery": "pig_batches",
+    "poultry": "poultry_batches",
+}
+
+
+def _validate_batch_ref(table: str, record: dict, row_id: str,
+                         batch_ref_field: str, conn, errors: list) -> bool:
+    """For a nullable, polymorphic batch reference: if present, it must
+    resolve in the batch table for that row's domain (piggery->pig_batches,
+    poultry->poultry_batches). Other domains aren't checked - there's no
+    single anchor table for them at this reference's grain."""
+    batch_ref = record[batch_ref_field]
+    if batch_ref is None:
+        return True
+    ref_table = BATCH_REF_TABLE_BY_DOMAIN.get(record["domain"])
+    if ref_table is None:
+        return True
+    exists = conn.execute(
+        f"SELECT 1 FROM {ref_table} WHERE batch_code = %s", (batch_ref,)
+    ).fetchone()
+    if exists is None:
+        errors.append({
+            "table": table, "row": row_id, "field": batch_ref_field,
+            "value": batch_ref, "reason": f"no matching batch_code in {ref_table}",
+        })
+        return False
+    return True
 
 
 def _sync_farm_profile(wb, conn) -> int:
@@ -204,7 +251,7 @@ def _sync_staff(wb, conn, farm_code: str, lists: dict, errors: list) -> int:
     """)
     written = 0
     for record in records:
-        if not _validate_dropdowns("staff", record, "staff_code",
+        if not _validate_dropdowns("staff", record, record["staff_code"],
                                     STAFF_DROPDOWN_FIELDS, lists, errors):
             continue
         conn.execute(
@@ -251,7 +298,7 @@ def _sync_pig_batches(wb, conn, farm_code: str, lists: dict, errors: list) -> in
     """)
     written = 0
     for record in records:
-        if not _validate_dropdowns("pig_batches", record, "batch_code",
+        if not _validate_dropdowns("pig_batches", record, record["batch_code"],
                                     PIG_BATCH_DROPDOWN_FIELDS, lists, errors):
             continue
         conn.execute(
@@ -412,7 +459,7 @@ def _sync_sow_register(wb, conn, farm_code: str, lists: dict, errors: list) -> i
     """)
     written = 0
     for record in records:
-        if not _validate_dropdowns("sow_register", record, "sow_tag",
+        if not _validate_dropdowns("sow_register", record, record["sow_tag"],
                                     SOW_DROPDOWN_FIELDS, lists, errors):
             continue
         conn.execute(
@@ -464,7 +511,7 @@ def _sync_breeding_farrowing(wb, conn, lists: dict, errors: list) -> int:
     """)
     written = 0
     for record in records:
-        if not _validate_dropdowns("breeding_farrowing", record, "sow_tag",
+        if not _validate_dropdowns("breeding_farrowing", record, record["sow_tag"],
                                     FARROWING_DROPDOWN_FIELDS, lists, errors):
             continue
         try:
@@ -536,7 +583,7 @@ def _sync_poultry_batches(wb, conn, farm_code: str, lists: dict, errors: list) -
     """)
     written = 0
     for record in records:
-        if not _validate_dropdowns("poultry_batches", record, "batch_code",
+        if not _validate_dropdowns("poultry_batches", record, record["batch_code"],
                                     POULTRY_BATCH_DROPDOWN_FIELDS, lists, errors):
             continue
         conn.execute(
@@ -708,7 +755,7 @@ def _sync_plots(wb, conn, farm_code: str, lists: dict, errors: list) -> int:
     """)
     written = 0
     for record in records:
-        if not _validate_dropdowns("plots", record, "plot_code",
+        if not _validate_dropdowns("plots", record, record["plot_code"],
                                     PLOT_DROPDOWN_FIELDS, lists, errors):
             continue
         conn.execute(
@@ -756,7 +803,7 @@ def _sync_plantings(wb, conn, lists: dict, errors: list) -> int:
     """)
     written = 0
     for record in records:
-        if not _validate_dropdowns("plantings", record, "planting_code",
+        if not _validate_dropdowns("plantings", record, record["planting_code"],
                                     PLANTING_DROPDOWN_FIELDS, lists, errors):
             continue
         try:
@@ -823,7 +870,7 @@ def _sync_field_operations(wb, conn, lists: dict, errors: list) -> int:
     """)
     written = 0
     for record in records:
-        if not _validate_dropdowns("field_operations", record, "planting_code",
+        if not _validate_dropdowns("field_operations", record, record["planting_code"],
                                     FIELD_OPERATION_DROPDOWN_FIELDS, lists, errors):
             continue
         try:
@@ -887,7 +934,7 @@ def _sync_scouting_log(wb, conn, lists: dict, errors: list) -> int:
     """)
     written = 0
     for record in records:
-        if not _validate_dropdowns("scouting_log", record, "planting_code",
+        if not _validate_dropdowns("scouting_log", record, record["planting_code"],
                                     SCOUTING_DROPDOWN_FIELDS, lists, errors):
             continue
         try:
@@ -948,7 +995,7 @@ def _sync_harvest_log(wb, conn, lists: dict, errors: list) -> int:
     """)
     written = 0
     for record in records:
-        if not _validate_dropdowns("harvest_log", record, "planting_code",
+        if not _validate_dropdowns("harvest_log", record, record["planting_code"],
                                     HARVEST_DROPDOWN_FIELDS, lists, errors):
             continue
         try:
@@ -983,6 +1030,328 @@ def _sync_harvest_log(wb, conn, lists: dict, errors: list) -> int:
                 "reason": "no matching planting_code in plantings",
             })
             continue
+        written += 1
+    return written
+
+
+def _sync_feed_inventory(wb, conn, lists: dict, errors: list) -> int:
+    records = read_tab_rows(wb["06_FEED_INVENTORY"])
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS feed_inventory (
+            date DATE NOT NULL,
+            domain TEXT NOT NULL,
+            feed_type TEXT NOT NULL,
+            opening_kg NUMERIC,
+            received_kg NUMERIC,
+            used_kg NUMERIC,
+            waste_kg NUMERIC,
+            closing_kg NUMERIC,
+            unit_cost_per_kg NUMERIC,
+            supplier TEXT,
+            batch_ref TEXT,
+            PRIMARY KEY (date, domain, feed_type)
+        )
+    """)
+    written = 0
+    for record in records:
+        conn.execute(
+            """
+            INSERT INTO feed_inventory (
+                date, domain, feed_type, opening_kg, received_kg, used_kg,
+                waste_kg, closing_kg, unit_cost_per_kg, supplier, batch_ref
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (date, domain, feed_type) DO UPDATE SET
+                opening_kg = EXCLUDED.opening_kg,
+                received_kg = EXCLUDED.received_kg,
+                used_kg = EXCLUDED.used_kg,
+                waste_kg = EXCLUDED.waste_kg,
+                closing_kg = EXCLUDED.closing_kg,
+                unit_cost_per_kg = EXCLUDED.unit_cost_per_kg,
+                supplier = EXCLUDED.supplier,
+                batch_ref = EXCLUDED.batch_ref
+            """,
+            (
+                record["date"], record["domain"], record["feed_type"],
+                record["opening_kg"], record["received_kg"], record["used_kg"],
+                record["waste_kg"], record["closing_kg"],
+                record["unit_cost_per_kg"], record["supplier"],
+                record["batch_ref"],
+            ),
+        )
+        written += 1
+    return written
+
+
+def _sync_weather_log(wb, conn) -> int:
+    records = read_tab_rows(wb["05_WEATHER_LOG"])
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS weather_log (
+            date DATE PRIMARY KEY,
+            rainfall_mm NUMERIC,
+            temp_min_c NUMERIC,
+            temp_max_c NUMERIC,
+            humidity_pct NUMERIC,
+            event TEXT
+        )
+    """)
+    for record in records:
+        conn.execute(
+            """
+            INSERT INTO weather_log (
+                date, rainfall_mm, temp_min_c, temp_max_c, humidity_pct, event
+            ) VALUES (%s, %s, %s, %s, %s, %s)
+            ON CONFLICT (date) DO UPDATE SET
+                rainfall_mm = EXCLUDED.rainfall_mm,
+                temp_min_c = EXCLUDED.temp_min_c,
+                temp_max_c = EXCLUDED.temp_max_c,
+                humidity_pct = EXCLUDED.humidity_pct,
+                event = EXCLUDED.event
+            """,
+            (
+                record["date"], record["rainfall_mm"], record["temp_min_c"],
+                record["temp_max_c"], record["humidity_pct"], record["event"],
+            ),
+        )
+    return len(records)
+
+
+def _sync_labour_log(wb, conn, errors: list) -> int:
+    records = read_tab_rows(wb["04_LABOUR_LOG"])
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS labour_log (
+            date DATE NOT NULL,
+            staff_code TEXT NOT NULL REFERENCES staff(staff_code),
+            domain TEXT,
+            task TEXT,
+            hours NUMERIC,
+            overtime_hours NUMERIC,
+            labour_cost NUMERIC,
+            batch_ref TEXT,
+            PRIMARY KEY (date, staff_code)
+        )
+    """)
+    written = 0
+    for record in records:
+        row_id = f"{record['date']}/{record['staff_code']}"
+        if not _validate_batch_ref("labour_log", record, row_id, "batch_ref",
+                                    conn, errors):
+            continue
+        try:
+            conn.execute(
+                """
+                INSERT INTO labour_log (
+                    date, staff_code, domain, task, hours, overtime_hours,
+                    labour_cost, batch_ref
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (date, staff_code) DO UPDATE SET
+                    domain = EXCLUDED.domain,
+                    task = EXCLUDED.task,
+                    hours = EXCLUDED.hours,
+                    overtime_hours = EXCLUDED.overtime_hours,
+                    labour_cost = EXCLUDED.labour_cost,
+                    batch_ref = EXCLUDED.batch_ref
+                """,
+                (
+                    record["date"], record["staff_code"], record["domain"],
+                    record["task"], record["hours"], record["overtime_hours"],
+                    record["labour_cost"], record["batch_ref"],
+                ),
+            )
+        except psycopg.errors.ForeignKeyViolation:
+            conn.rollback()
+            errors.append({
+                "table": "labour_log",
+                "row": f"{record['date']}/{record['staff_code']}",
+                "field": "staff_code", "value": record["staff_code"],
+                "reason": "no matching staff_code in staff",
+            })
+            continue
+        written += 1
+    return written
+
+
+def _sync_expenses(wb, conn, lists: dict, errors: list) -> int:
+    records = read_tab_rows(wb["02_EXPENSES"])
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS expenses (
+            date DATE NOT NULL,
+            domain TEXT,
+            category TEXT,
+            item TEXT NOT NULL,
+            quantity NUMERIC,
+            unit TEXT,
+            unit_cost NUMERIC,
+            total_cost NUMERIC,
+            supplier TEXT,
+            payment_method TEXT,
+            batch_ref TEXT,
+            allocation_note TEXT,
+            recorded_by TEXT,
+            PRIMARY KEY (date, domain, item)
+        )
+    """)
+    written = 0
+    for record in records:
+        row_id = f"{record['date']}/{record['domain']}/{record['item']}"
+        if not _validate_batch_ref("expenses", record, row_id, "batch_ref",
+                                    conn, errors):
+            continue
+        conn.execute(
+            """
+            INSERT INTO expenses (
+                date, domain, category, item, quantity, unit, unit_cost,
+                total_cost, supplier, payment_method, batch_ref,
+                allocation_note, recorded_by
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (date, domain, item) DO UPDATE SET
+                category = EXCLUDED.category,
+                quantity = EXCLUDED.quantity,
+                unit = EXCLUDED.unit,
+                unit_cost = EXCLUDED.unit_cost,
+                total_cost = EXCLUDED.total_cost,
+                supplier = EXCLUDED.supplier,
+                payment_method = EXCLUDED.payment_method,
+                batch_ref = EXCLUDED.batch_ref,
+                allocation_note = EXCLUDED.allocation_note,
+                recorded_by = EXCLUDED.recorded_by
+            """,
+            (
+                record["date"], record["domain"], record["category"],
+                record["item"], record["quantity"], record["unit"],
+                record["unit_cost"], record["total_cost"], record["supplier"],
+                record["payment_method"], record["batch_ref"],
+                record["allocation_note"], record["recorded_by"],
+            ),
+        )
+        written += 1
+    return written
+
+
+def _sync_revenue(wb, conn, lists: dict, errors: list) -> int:
+    records = read_tab_rows(wb["03_REVENUE"])
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS revenue (
+            date DATE NOT NULL,
+            domain TEXT,
+            product TEXT,
+            quantity NUMERIC,
+            unit TEXT,
+            unit_price NUMERIC,
+            total_amount NUMERIC,
+            head_count INTEGER,
+            avg_weight_kg NUMERIC,
+            grade TEXT,
+            buyer TEXT NOT NULL,
+            channel TEXT,
+            payment_status TEXT,
+            batch_ref TEXT,
+            PRIMARY KEY (date, domain, buyer)
+        )
+    """)
+    written = 0
+    for record in records:
+        row_id = f"{record['date']}/{record['domain']}/{record['buyer']}"
+        if not _validate_dropdowns("revenue", record, row_id,
+                                    REVENUE_DROPDOWN_FIELDS, lists, errors):
+            continue
+        if not _validate_batch_ref("revenue", record, row_id, "batch_ref",
+                                    conn, errors):
+            continue
+        conn.execute(
+            """
+            INSERT INTO revenue (
+                date, domain, product, quantity, unit, unit_price, total_amount,
+                head_count, avg_weight_kg, grade, buyer, channel,
+                payment_status, batch_ref
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (date, domain, buyer) DO UPDATE SET
+                product = EXCLUDED.product,
+                quantity = EXCLUDED.quantity,
+                unit = EXCLUDED.unit,
+                unit_price = EXCLUDED.unit_price,
+                total_amount = EXCLUDED.total_amount,
+                head_count = EXCLUDED.head_count,
+                avg_weight_kg = EXCLUDED.avg_weight_kg,
+                grade = EXCLUDED.grade,
+                channel = EXCLUDED.channel,
+                payment_status = EXCLUDED.payment_status,
+                batch_ref = EXCLUDED.batch_ref
+            """,
+            (
+                record["date"], record["domain"], record["product"],
+                record["quantity"], record["unit"], record["unit_price"],
+                record["total_amount"], record["head_count"],
+                record["avg_weight_kg"], record["grade"], record["buyer"],
+                record["channel"], record["payment_status"],
+                record["batch_ref"],
+            ),
+        )
+        written += 1
+    return written
+
+
+def _sync_health_log(wb, conn, errors: list) -> int:
+    records = read_tab_rows(wb["07_HEALTH_LOG"])
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS health_log (
+            date DATE NOT NULL,
+            domain TEXT,
+            batch_code TEXT NOT NULL,
+            animal_tag TEXT,
+            event_type TEXT NOT NULL,
+            symptom TEXT,
+            diagnosis TEXT,
+            product TEXT,
+            dose TEXT,
+            animals_treated INTEGER,
+            cost NUMERIC,
+            withdrawal_until DATE,
+            outcome TEXT,
+            administered_by TEXT,
+            PRIMARY KEY (date, batch_code, event_type)
+        )
+    """)
+    written = 0
+    for record in records:
+        row_id = f"{record['date']}/{record['batch_code']}/{record['event_type']}"
+        if not _validate_batch_ref("health_log", record, row_id, "batch_code",
+                                    conn, errors):
+            continue
+        conn.execute(
+            """
+            INSERT INTO health_log (
+                date, domain, batch_code, animal_tag, event_type, symptom,
+                diagnosis, product, dose, animals_treated, cost,
+                withdrawal_until, outcome, administered_by
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (date, batch_code, event_type) DO UPDATE SET
+                domain = EXCLUDED.domain,
+                animal_tag = EXCLUDED.animal_tag,
+                symptom = EXCLUDED.symptom,
+                diagnosis = EXCLUDED.diagnosis,
+                product = EXCLUDED.product,
+                dose = EXCLUDED.dose,
+                animals_treated = EXCLUDED.animals_treated,
+                cost = EXCLUDED.cost,
+                withdrawal_until = EXCLUDED.withdrawal_until,
+                outcome = EXCLUDED.outcome,
+                administered_by = EXCLUDED.administered_by
+            """,
+            (
+                record["date"], record["domain"], record["batch_code"],
+                record["animal_tag"], record["event_type"], record["symptom"],
+                record["diagnosis"], record["product"], record["dose"],
+                record["animals_treated"], record["cost"],
+                record["withdrawal_until"], record["outcome"],
+                record["administered_by"],
+            ),
+        )
         written += 1
     return written
 
