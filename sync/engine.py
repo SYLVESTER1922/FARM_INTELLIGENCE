@@ -38,6 +38,15 @@ def sync_workbook_to_supabase(filepath: str, farm_code: str, dsn: str) -> SyncRe
     if "P5_BREEDING_FARROWING" in wb.sheetnames:
         report.rows_written["breeding_farrowing"] = _sync_breeding_farrowing(
             wb, conn, lists, report.errors)
+    if "C1_POULTRY_BATCHES" in wb.sheetnames:
+        report.rows_written["poultry_batches"] = _sync_poultry_batches(
+            wb, conn, farm_code, lists, report.errors)
+    if "C2_POULTRY_DAILY_LOG" in wb.sheetnames:
+        report.rows_written["poultry_daily_log"] = _sync_poultry_daily_log(
+            wb, conn, report.errors)
+    if "C3_POULTRY_WEIGHTS" in wb.sheetnames:
+        report.rows_written["poultry_weights"] = _sync_poultry_weights(
+            wb, conn, report.errors)
 
     conn.close()
     return report
@@ -57,6 +66,12 @@ SOW_DROPDOWN_FIELDS = {
 FARROWING_DROPDOWN_FIELDS = {
     "service_type": "SERVICE_TYPE",
     "pregnancy_confirmed": "YESNO",
+}
+
+POULTRY_BATCH_DROPDOWN_FIELDS = {
+    "bird_type": "BIRD_TYPE",
+    "breed": "BREED_POULTRY",
+    "status": "POULTRY_STATUS",
 }
 
 
@@ -453,6 +468,182 @@ def _sync_breeding_farrowing(wb, conn, lists: dict, errors: list) -> int:
                 "value": (record["sow_tag"], record["litter_batch_code"]),
                 "reason": "no matching sow_tag in sow_register or "
                           "litter_batch_code in pig_batches",
+            })
+            continue
+        written += 1
+    return written
+
+
+def _sync_poultry_batches(wb, conn, farm_code: str, lists: dict, errors: list) -> int:
+    records = read_tab_rows(wb["C1_POULTRY_BATCHES"])
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS poultry_batches (
+            batch_code TEXT PRIMARY KEY,
+            farm_code TEXT NOT NULL REFERENCES farm_profile(farm_code),
+            bird_type TEXT,
+            breed TEXT,
+            house TEXT,
+            placement_date DATE,
+            chicks_placed INTEGER,
+            chick_unit_cost NUMERIC,
+            hatchery TEXT,
+            target_off_date DATE,
+            status TEXT
+        )
+    """)
+    written = 0
+    for record in records:
+        if not _validate_dropdowns("poultry_batches", record, "batch_code",
+                                    POULTRY_BATCH_DROPDOWN_FIELDS, lists, errors):
+            continue
+        conn.execute(
+            """
+            INSERT INTO poultry_batches (
+                batch_code, farm_code, bird_type, breed, house, placement_date,
+                chicks_placed, chick_unit_cost, hatchery, target_off_date, status
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (batch_code) DO UPDATE SET
+                farm_code = EXCLUDED.farm_code,
+                bird_type = EXCLUDED.bird_type,
+                breed = EXCLUDED.breed,
+                house = EXCLUDED.house,
+                placement_date = EXCLUDED.placement_date,
+                chicks_placed = EXCLUDED.chicks_placed,
+                chick_unit_cost = EXCLUDED.chick_unit_cost,
+                hatchery = EXCLUDED.hatchery,
+                target_off_date = EXCLUDED.target_off_date,
+                status = EXCLUDED.status
+            """,
+            (
+                record["batch_code"], farm_code, record["bird_type"], record["breed"],
+                record["house"], record["placement_date"], record["chicks_placed"],
+                record["chick_unit_cost"], record["hatchery"],
+                record["target_off_date"], record["status"],
+            ),
+        )
+        written += 1
+    return written
+
+
+def _sync_poultry_daily_log(wb, conn, errors: list) -> int:
+    records = read_tab_rows(wb["C2_POULTRY_DAILY_LOG"])
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS poultry_daily_log (
+            date DATE NOT NULL,
+            batch_code TEXT NOT NULL REFERENCES poultry_batches(batch_code),
+            age_days INTEGER,
+            deaths INTEGER,
+            culls INTEGER,
+            closing_birds INTEGER,
+            feed_type TEXT,
+            feed_kg NUMERIC,
+            water_litres NUMERIC,
+            house_temp_c NUMERIC,
+            litter_condition TEXT,
+            lighting_hours NUMERIC,
+            eggs_collected INTEGER,
+            eggs_cracked INTEGER,
+            eggs_dirty INTEGER,
+            notes TEXT,
+            recorded_by TEXT,
+            PRIMARY KEY (date, batch_code)
+        )
+    """)
+    written = 0
+    for record in records:
+        try:
+            conn.execute(
+                """
+                INSERT INTO poultry_daily_log (
+                    date, batch_code, age_days, deaths, culls, closing_birds,
+                    feed_type, feed_kg, water_litres, house_temp_c,
+                    litter_condition, lighting_hours, eggs_collected,
+                    eggs_cracked, eggs_dirty, notes, recorded_by
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (date, batch_code) DO UPDATE SET
+                    age_days = EXCLUDED.age_days,
+                    deaths = EXCLUDED.deaths,
+                    culls = EXCLUDED.culls,
+                    closing_birds = EXCLUDED.closing_birds,
+                    feed_type = EXCLUDED.feed_type,
+                    feed_kg = EXCLUDED.feed_kg,
+                    water_litres = EXCLUDED.water_litres,
+                    house_temp_c = EXCLUDED.house_temp_c,
+                    litter_condition = EXCLUDED.litter_condition,
+                    lighting_hours = EXCLUDED.lighting_hours,
+                    eggs_collected = EXCLUDED.eggs_collected,
+                    eggs_cracked = EXCLUDED.eggs_cracked,
+                    eggs_dirty = EXCLUDED.eggs_dirty,
+                    notes = EXCLUDED.notes,
+                    recorded_by = EXCLUDED.recorded_by
+                """,
+                (
+                    record["date"], record["batch_code"], record["age_days"],
+                    record["deaths"], record["culls"], record["closing_birds"],
+                    record["feed_type"], record["feed_kg"], record["water_litres"],
+                    record["house_temp_c"], record["litter_condition"],
+                    record["lighting_hours"], record["eggs_collected"],
+                    record["eggs_cracked"], record["eggs_dirty"], record["notes"],
+                    record["recorded_by"],
+                ),
+            )
+        except psycopg.errors.ForeignKeyViolation:
+            conn.rollback()
+            errors.append({
+                "table": "poultry_daily_log",
+                "row": f"{record['date']}/{record['batch_code']}",
+                "field": "batch_code", "value": record["batch_code"],
+                "reason": "no matching batch_code in poultry_batches",
+            })
+            continue
+        written += 1
+    return written
+
+
+def _sync_poultry_weights(wb, conn, errors: list) -> int:
+    records = read_tab_rows(wb["C3_POULTRY_WEIGHTS"])
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS poultry_weights (
+            date DATE NOT NULL,
+            batch_code TEXT NOT NULL REFERENCES poultry_batches(batch_code),
+            age_days INTEGER,
+            sample_size INTEGER,
+            avg_weight_g NUMERIC,
+            uniformity_pct NUMERIC,
+            PRIMARY KEY (date, batch_code)
+        )
+    """)
+    written = 0
+    for record in records:
+        try:
+            conn.execute(
+                """
+                INSERT INTO poultry_weights (
+                    date, batch_code, age_days, sample_size, avg_weight_g,
+                    uniformity_pct
+                ) VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (date, batch_code) DO UPDATE SET
+                    age_days = EXCLUDED.age_days,
+                    sample_size = EXCLUDED.sample_size,
+                    avg_weight_g = EXCLUDED.avg_weight_g,
+                    uniformity_pct = EXCLUDED.uniformity_pct
+                """,
+                (
+                    record["date"], record["batch_code"], record["age_days"],
+                    record["sample_size"], record["avg_weight_g"],
+                    record["uniformity_pct"],
+                ),
+            )
+        except psycopg.errors.ForeignKeyViolation:
+            conn.rollback()
+            errors.append({
+                "table": "poultry_weights",
+                "row": f"{record['date']}/{record['batch_code']}",
+                "field": "batch_code", "value": record["batch_code"],
+                "reason": "no matching batch_code in poultry_batches",
             })
             continue
         written += 1
