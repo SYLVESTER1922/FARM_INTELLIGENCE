@@ -11,20 +11,31 @@ shared module the rest of the sync builds on.
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] A reusable workbook-reader module exists, parsing every tab's row-1 (purpose/cadence
+- [x] A reusable workbook-reader module exists, parsing every tab's row-1 (purpose/cadence
       note), row-2 (headers), row-3 (sample row, never touched), row-4+ (data) convention,
       and extracting the `99_LISTS` dropdown vocabulary.
-- [ ] Postgres/Supabase schema exists for `00_FARM_PROFILE`, `01_STAFF`, and a reference
+      (`sync/workbook_reader.py`: `read_tab_rows`, `read_list_values`)
+- [x] Postgres/Supabase schema exists for `00_FARM_PROFILE`, `01_STAFF`, and a reference
       table (or set of tables) mirroring `99_LISTS`.
-- [ ] `syncWorkbookToSupabase(filePath, farmCode)` upserts these three tables from a
+      (`farm_profile`, `staff`, `list_values` tables, created in `sync/engine.py`)
+- [x] `syncWorkbookToSupabase(filePath, farmCode)` upserts these three tables from a
       fixture workbook, keyed on natural keys (`farm_code`, `staff_code`), and returns a
       sync report of rows written per table.
-- [ ] Running the sync twice against an unchanged fixture produces identical row counts
+      (`sync_workbook_to_supabase` in `sync/engine.py`, returns a `SyncReport`)
+- [x] Running the sync twice against an unchanged fixture produces identical row counts
       (idempotency).
-- [ ] A row with a dropdown value not present in `99_LISTS` is rejected and reported with
+      (`tests/test_sync_engine.py::test_sync_is_idempotent_for_farm_profile`)
+- [x] A row with a dropdown value not present in `99_LISTS` is rejected and reported with
       an error distinguishable from other failure types, not silently written.
-- [ ] Every synced table carries a `farm_code` column.
-- [ ] Tests assert on the resulting database state and the sync report, not on internal
+      (`_validate_dropdowns`, proven against two different fields:
+      `test_sync_rejects_staff_row_with_invalid_domain`,
+      `test_sync_rejects_staff_row_with_invalid_role`)
+- [x] Every synced table carries a `farm_code` column.
+      One deliberate exception: `list_values` does not, since `99_LISTS` is shared
+      dropdown vocabulary, not farm-specific data — flagged to the user, not objected to.
+- [x] Tests assert on the resulting database state and the sync report, not on internal
       parsing/mapping functions in isolation.
+      (all 7 tests in `tests/test_sync_engine.py` go through the public
+      `sync_workbook_to_supabase` seam only)

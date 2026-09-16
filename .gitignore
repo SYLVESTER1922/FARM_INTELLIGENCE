@@ -1,3 +1,5 @@
 .DS_Store
 gen_scripts/rows.pkl
 __pycache__/
+.venv/
+.pytest_cache/
