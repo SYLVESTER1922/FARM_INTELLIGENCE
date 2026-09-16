@@ -29,13 +29,14 @@ and fixing a data-model issue the validation surfaced.
    be told to work inside the project folder instead of `/tmp`. End result: 2,598 rows
    across 23 tabs, seed=42. Full generation logic: `gen_scripts/generate_data.py`.
 
-   **Known gap, never resolved**: no real spreadsheet engine has ever recalculated this
-   file. `/mnt/skills/public/xlsx/scripts/recalc.py` doesn't exist on this machine (bare
-   macOS host, not the expected container), and there's no LibreOffice/Excel to shell out
-   to. Formula correctness was only checked by a manual Python replica of each formula's
-   logic (`gen_scripts/verify.py`), not a genuine recalculation. **Recommend opening the
-   file in real Excel or Google Sheets once, to force an actual recalc, before trusting the
-   formula columns.**
+   **Recalculation gap — now resolved.** At the time this doc was first written, no real
+   spreadsheet engine had recalculated the file (`/mnt/skills/public/xlsx/scripts/recalc.py`
+   doesn't exist on this machine — bare macOS host, not the expected container — and there
+   was no LibreOffice/Excel to shell out to; formula correctness had only been checked by a
+   manual Python replica of each formula's logic in `gen_scripts/verify.py`). This has since
+   been run separately, via LibreOffice in a different Claude session, against the fully
+   populated workbook: **1,876 formulas recalculated, 0 errors.** No further action needed
+   here.
 
 3. **Ran `/prototype`** to test whether the workbook's "shared-core-plus-domain-module"
    table design supports real cross-domain SQL joins (motivated by the eventual Supabase
@@ -72,8 +73,6 @@ and fixing a data-model issue the validation surfaced.
 - **Office lock file seen once.** A `~$Netrisyl_Farm_Intelligence_Workbook.xlsx` lock file
   was observed at one point, suggesting Excel may have had the workbook open concurrently
   with automated edits. Worth a sanity check for corruption if that's still the case.
-- **The recalculation gap (see point 2 above) is still open.** Nobody has run a real
-  spreadsheet engine over this file yet.
 
 ## Key facts about the workbook (reference, don't re-derive)
 
