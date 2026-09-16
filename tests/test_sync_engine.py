@@ -1,34 +1,10 @@
 from sync.engine import sync_workbook_to_supabase
+from tests.fixtures import base_fixture
 from tests.workbook_builder import build_workbook
 
 
 def _fixture_with_staff(staff_rows, lists=None):
-    fixture = {
-        "00_FARM_PROFILE": {
-            "header": ["farm_code", "farm_name", "region_district", "currency",
-                       "total_hectares", "module_piggery_active", "module_poultry_active",
-                       "module_crops_active", "financial_year_start"],
-            "sample": ["NIS-999", "Sample Farm", "Sample District", "USD", 10,
-                       "Yes", "Yes", "Yes", "2026-01-01"],
-            "rows": [["NIS-001", "Chiedza Mixed Farm", "Goromonzi, Mashonaland East",
-                      "USD", 45, "Yes", "Yes", "Yes", "2026-01-01"]],
-        },
-        "01_STAFF": {
-            "header": ["staff_code", "full_name", "role", "primary_domain",
-                       "pay_type", "rate", "active"],
-            "sample": ["S99", "Sample Person", "Supervisor", "shared", "Daily", 10, "Yes"],
-            "rows": staff_rows,
-        },
-    }
-    if lists is not None:
-        header = list(lists.keys())
-        max_len = max((len(v) for v in lists.values()), default=0)
-        rows = [
-            [lists[name][i] if i < len(lists[name]) else None for name in header]
-            for i in range(max_len)
-        ]
-        fixture["99_LISTS"] = {"header": header, "rows": rows}
-    return fixture
+    return base_fixture(staff_rows=staff_rows, lists=lists)
 
 
 def test_sync_writes_farm_profile_row(tmp_path, db_conn, test_dsn):
