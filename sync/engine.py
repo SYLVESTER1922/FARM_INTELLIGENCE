@@ -47,6 +47,21 @@ def sync_workbook_to_supabase(filepath: str, farm_code: str, dsn: str) -> SyncRe
     if "C3_POULTRY_WEIGHTS" in wb.sheetnames:
         report.rows_written["poultry_weights"] = _sync_poultry_weights(
             wb, conn, report.errors)
+    if "F1_PLOTS" in wb.sheetnames:
+        report.rows_written["plots"] = _sync_plots(
+            wb, conn, farm_code, lists, report.errors)
+    if "F2_PLANTINGS" in wb.sheetnames:
+        report.rows_written["plantings"] = _sync_plantings(
+            wb, conn, lists, report.errors)
+    if "F3_FIELD_OPERATIONS" in wb.sheetnames:
+        report.rows_written["field_operations"] = _sync_field_operations(
+            wb, conn, lists, report.errors)
+    if "F4_SCOUTING_LOG" in wb.sheetnames:
+        report.rows_written["scouting_log"] = _sync_scouting_log(
+            wb, conn, lists, report.errors)
+    if "F5_HARVEST_LOG" in wb.sheetnames:
+        report.rows_written["harvest_log"] = _sync_harvest_log(
+            wb, conn, lists, report.errors)
 
     conn.close()
     return report
@@ -72,6 +87,33 @@ POULTRY_BATCH_DROPDOWN_FIELDS = {
     "bird_type": "BIRD_TYPE",
     "breed": "BREED_POULTRY",
     "status": "POULTRY_STATUS",
+}
+
+PLOT_DROPDOWN_FIELDS = {
+    "soil_type": "SOIL_TYPE",
+    "irrigation_type": "IRRIGATION_TYPE",
+}
+
+PLANTING_DROPDOWN_FIELDS = {
+    "crop": "CROP",
+    "season": "SEASON",
+    "status": "PLANTING_STATUS",
+}
+
+FIELD_OPERATION_DROPDOWN_FIELDS = {
+    "op_type": "OP_TYPE",
+    "unit": "UNIT_FIELD",
+}
+
+SCOUTING_DROPDOWN_FIELDS = {
+    "growth_stage": "GROWTH_STAGE",
+    "issue_type": "ISSUE_TYPE",
+    "soil_moisture": "SOIL_MOISTURE",
+}
+
+HARVEST_DROPDOWN_FIELDS = {
+    "grade": "GRADE",
+    "storage_location": "STORAGE",
 }
 
 
@@ -644,6 +686,301 @@ def _sync_poultry_weights(wb, conn, errors: list) -> int:
                 "row": f"{record['date']}/{record['batch_code']}",
                 "field": "batch_code", "value": record["batch_code"],
                 "reason": "no matching batch_code in poultry_batches",
+            })
+            continue
+        written += 1
+    return written
+
+
+def _sync_plots(wb, conn, farm_code: str, lists: dict, errors: list) -> int:
+    records = read_tab_rows(wb["F1_PLOTS"])
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS plots (
+            plot_code TEXT PRIMARY KEY,
+            farm_code TEXT NOT NULL REFERENCES farm_profile(farm_code),
+            plot_name TEXT,
+            hectares NUMERIC,
+            soil_type TEXT,
+            irrigation_type TEXT,
+            gps TEXT
+        )
+    """)
+    written = 0
+    for record in records:
+        if not _validate_dropdowns("plots", record, "plot_code",
+                                    PLOT_DROPDOWN_FIELDS, lists, errors):
+            continue
+        conn.execute(
+            """
+            INSERT INTO plots (
+                plot_code, farm_code, plot_name, hectares, soil_type,
+                irrigation_type, gps
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (plot_code) DO UPDATE SET
+                farm_code = EXCLUDED.farm_code,
+                plot_name = EXCLUDED.plot_name,
+                hectares = EXCLUDED.hectares,
+                soil_type = EXCLUDED.soil_type,
+                irrigation_type = EXCLUDED.irrigation_type,
+                gps = EXCLUDED.gps
+            """,
+            (
+                record["plot_code"], farm_code, record["plot_name"],
+                record["hectares"], record["soil_type"],
+                record["irrigation_type"], record["gps"],
+            ),
+        )
+        written += 1
+    return written
+
+
+def _sync_plantings(wb, conn, lists: dict, errors: list) -> int:
+    records = read_tab_rows(wb["F2_PLANTINGS"])
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS plantings (
+            planting_code TEXT PRIMARY KEY,
+            plot_code TEXT NOT NULL REFERENCES plots(plot_code),
+            crop TEXT,
+            variety TEXT,
+            season TEXT,
+            planting_date DATE,
+            area_ha NUMERIC,
+            seed_kg NUMERIC,
+            seed_cost NUMERIC,
+            expected_harvest_date DATE,
+            expected_yield_tons_ha NUMERIC,
+            status TEXT
+        )
+    """)
+    written = 0
+    for record in records:
+        if not _validate_dropdowns("plantings", record, "planting_code",
+                                    PLANTING_DROPDOWN_FIELDS, lists, errors):
+            continue
+        try:
+            conn.execute(
+                """
+                INSERT INTO plantings (
+                    planting_code, plot_code, crop, variety, season,
+                    planting_date, area_ha, seed_kg, seed_cost,
+                    expected_harvest_date, expected_yield_tons_ha, status
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (planting_code) DO UPDATE SET
+                    plot_code = EXCLUDED.plot_code,
+                    crop = EXCLUDED.crop,
+                    variety = EXCLUDED.variety,
+                    season = EXCLUDED.season,
+                    planting_date = EXCLUDED.planting_date,
+                    area_ha = EXCLUDED.area_ha,
+                    seed_kg = EXCLUDED.seed_kg,
+                    seed_cost = EXCLUDED.seed_cost,
+                    expected_harvest_date = EXCLUDED.expected_harvest_date,
+                    expected_yield_tons_ha = EXCLUDED.expected_yield_tons_ha,
+                    status = EXCLUDED.status
+                """,
+                (
+                    record["planting_code"], record["plot_code"], record["crop"],
+                    record["variety"], record["season"], record["planting_date"],
+                    record["area_ha"], record["seed_kg"], record["seed_cost"],
+                    record["expected_harvest_date"],
+                    record["expected_yield_tons_ha"], record["status"],
+                ),
+            )
+        except psycopg.errors.ForeignKeyViolation:
+            conn.rollback()
+            errors.append({
+                "table": "plantings", "row": record["planting_code"],
+                "field": "plot_code", "value": record["plot_code"],
+                "reason": "no matching plot_code in plots",
+            })
+            continue
+        written += 1
+    return written
+
+
+def _sync_field_operations(wb, conn, lists: dict, errors: list) -> int:
+    records = read_tab_rows(wb["F3_FIELD_OPERATIONS"])
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS field_operations (
+            date DATE NOT NULL,
+            planting_code TEXT NOT NULL REFERENCES plantings(planting_code),
+            op_type TEXT NOT NULL,
+            product TEXT,
+            rate TEXT,
+            quantity NUMERIC,
+            unit TEXT,
+            input_cost NUMERIC,
+            labour_hours NUMERIC,
+            machine_hours NUMERIC,
+            irrigation_mm NUMERIC,
+            notes TEXT,
+            recorded_by TEXT,
+            PRIMARY KEY (date, planting_code, op_type)
+        )
+    """)
+    written = 0
+    for record in records:
+        if not _validate_dropdowns("field_operations", record, "planting_code",
+                                    FIELD_OPERATION_DROPDOWN_FIELDS, lists, errors):
+            continue
+        try:
+            conn.execute(
+                """
+                INSERT INTO field_operations (
+                    date, planting_code, op_type, product, rate, quantity, unit,
+                    input_cost, labour_hours, machine_hours, irrigation_mm,
+                    notes, recorded_by
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (date, planting_code, op_type) DO UPDATE SET
+                    product = EXCLUDED.product,
+                    rate = EXCLUDED.rate,
+                    quantity = EXCLUDED.quantity,
+                    unit = EXCLUDED.unit,
+                    input_cost = EXCLUDED.input_cost,
+                    labour_hours = EXCLUDED.labour_hours,
+                    machine_hours = EXCLUDED.machine_hours,
+                    irrigation_mm = EXCLUDED.irrigation_mm,
+                    notes = EXCLUDED.notes,
+                    recorded_by = EXCLUDED.recorded_by
+                """,
+                (
+                    record["date"], record["planting_code"], record["op_type"],
+                    record["product"], record["rate"], record["quantity"],
+                    record["unit"], record["input_cost"], record["labour_hours"],
+                    record["machine_hours"], record["irrigation_mm"],
+                    record["notes"], record["recorded_by"],
+                ),
+            )
+        except psycopg.errors.ForeignKeyViolation:
+            conn.rollback()
+            errors.append({
+                "table": "field_operations",
+                "row": f"{record['date']}/{record['planting_code']}",
+                "field": "planting_code", "value": record["planting_code"],
+                "reason": "no matching planting_code in plantings",
+            })
+            continue
+        written += 1
+    return written
+
+
+def _sync_scouting_log(wb, conn, lists: dict, errors: list) -> int:
+    records = read_tab_rows(wb["F4_SCOUTING_LOG"])
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS scouting_log (
+            date DATE NOT NULL,
+            planting_code TEXT NOT NULL REFERENCES plantings(planting_code),
+            growth_stage TEXT,
+            issue_type TEXT,
+            issue_name TEXT,
+            severity_1_5 INTEGER,
+            incidence_pct NUMERIC,
+            soil_moisture TEXT,
+            action_taken TEXT,
+            scouted_by TEXT,
+            PRIMARY KEY (date, planting_code)
+        )
+    """)
+    written = 0
+    for record in records:
+        if not _validate_dropdowns("scouting_log", record, "planting_code",
+                                    SCOUTING_DROPDOWN_FIELDS, lists, errors):
+            continue
+        try:
+            conn.execute(
+                """
+                INSERT INTO scouting_log (
+                    date, planting_code, growth_stage, issue_type, issue_name,
+                    severity_1_5, incidence_pct, soil_moisture, action_taken,
+                    scouted_by
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (date, planting_code) DO UPDATE SET
+                    growth_stage = EXCLUDED.growth_stage,
+                    issue_type = EXCLUDED.issue_type,
+                    issue_name = EXCLUDED.issue_name,
+                    severity_1_5 = EXCLUDED.severity_1_5,
+                    incidence_pct = EXCLUDED.incidence_pct,
+                    soil_moisture = EXCLUDED.soil_moisture,
+                    action_taken = EXCLUDED.action_taken,
+                    scouted_by = EXCLUDED.scouted_by
+                """,
+                (
+                    record["date"], record["planting_code"], record["growth_stage"],
+                    record["issue_type"], record["issue_name"],
+                    record["severity_1_5"], record["incidence_pct"],
+                    record["soil_moisture"], record["action_taken"],
+                    record["scouted_by"],
+                ),
+            )
+        except psycopg.errors.ForeignKeyViolation:
+            conn.rollback()
+            errors.append({
+                "table": "scouting_log",
+                "row": f"{record['date']}/{record['planting_code']}",
+                "field": "planting_code", "value": record["planting_code"],
+                "reason": "no matching planting_code in plantings",
+            })
+            continue
+        written += 1
+    return written
+
+
+def _sync_harvest_log(wb, conn, lists: dict, errors: list) -> int:
+    records = read_tab_rows(wb["F5_HARVEST_LOG"])
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS harvest_log (
+            date DATE NOT NULL,
+            planting_code TEXT NOT NULL REFERENCES plantings(planting_code),
+            bags INTEGER,
+            quantity_kg NUMERIC,
+            moisture_pct NUMERIC,
+            grade TEXT,
+            field_loss_kg NUMERIC,
+            storage_location TEXT,
+            labour_hours NUMERIC,
+            PRIMARY KEY (date, planting_code)
+        )
+    """)
+    written = 0
+    for record in records:
+        if not _validate_dropdowns("harvest_log", record, "planting_code",
+                                    HARVEST_DROPDOWN_FIELDS, lists, errors):
+            continue
+        try:
+            conn.execute(
+                """
+                INSERT INTO harvest_log (
+                    date, planting_code, bags, quantity_kg, moisture_pct, grade,
+                    field_loss_kg, storage_location, labour_hours
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (date, planting_code) DO UPDATE SET
+                    bags = EXCLUDED.bags,
+                    quantity_kg = EXCLUDED.quantity_kg,
+                    moisture_pct = EXCLUDED.moisture_pct,
+                    grade = EXCLUDED.grade,
+                    field_loss_kg = EXCLUDED.field_loss_kg,
+                    storage_location = EXCLUDED.storage_location,
+                    labour_hours = EXCLUDED.labour_hours
+                """,
+                (
+                    record["date"], record["planting_code"], record["bags"],
+                    record["quantity_kg"], record["moisture_pct"],
+                    record["grade"], record["field_loss_kg"],
+                    record["storage_location"], record["labour_hours"],
+                ),
+            )
+        except psycopg.errors.ForeignKeyViolation:
+            conn.rollback()
+            errors.append({
+                "table": "harvest_log",
+                "row": f"{record['date']}/{record['planting_code']}",
+                "field": "planting_code", "value": record["planting_code"],
+                "reason": "no matching planting_code in plantings",
             })
             continue
         written += 1
