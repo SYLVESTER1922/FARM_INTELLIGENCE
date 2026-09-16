@@ -269,6 +269,7 @@ def pig_feed_type(age_days):
     return "Pig finisher"
 
 pig_daily_feed_by_domain_week = {}  # (monday_date) -> kg  (piggery)
+feed_usage_by_domain_type_week = {}  # (domain, feed_type, monday_date) -> kg
 pig_health_events = []
 pig_weekly_water = {}
 
@@ -313,6 +314,8 @@ for b in PIG_BATCHES:
             recorded_by=recorder))
         wk = day - dt.timedelta(days=day.weekday())
         pig_daily_feed_by_domain_week[wk] = pig_daily_feed_by_domain_week.get(wk, 0) + feed_kg
+        key = ("piggery", feed_type, wk)
+        feed_usage_by_domain_type_week[key] = feed_usage_by_domain_type_week.get(key, 0) + feed_kg
     b["final_count"] = count
 
 # Disease outbreak -> 07_HEALTH_LOG rows for PIG-B02
@@ -433,6 +436,8 @@ for b in POULTRY_BATCHES:
             recorded_by=recorder))
         wk = day - dt.timedelta(days=day.weekday())
         poultry_daily_feed_by_week[wk] = poultry_daily_feed_by_week.get(wk, 0) + feed_kg
+        key = ("poultry", feed_type, wk)
+        feed_usage_by_domain_type_week[key] = feed_usage_by_domain_type_week.get(key, 0) + feed_kg
     b["final_count"] = birds
 
 # heatwave-linked health log entry for BRO-P02
@@ -473,55 +478,64 @@ for b in POULTRY_BATCHES:
         day += dt.timedelta(days=7)
 
 # ---------------------------------------------------------------------------
-# 06_FEED_INVENTORY  (weekly stock count per domain, ties to summed daily feed_kg)
+# 06_FEED_INVENTORY  (one row per domain+feed_type per week, matching the
+# feed_type granularity used in P2/C2 daily logs - NOT one row per domain.
+# A domain-only grain can't be joined to the daily logs on (domain,
+# feed_type) without leaving most usage unpriced - see
+# prototype/supabase-domain-join-test for the finding that drove this.)
 # ---------------------------------------------------------------------------
 FEED_SUPPLIER = "Profeeds Marondera"
-SPIKE_WEEK = d("2026-02-02")  # monday - price spike quirk
+SPIKE_WEEK = d("2026-02-02")  # monday - price spike quirk, applied to
+                              # whichever (domain, feed_type) line has the
+                              # most usage that week, per domain
 
-def week_mondays(a, b):
-    day = a - dt.timedelta(days=a.weekday())
-    while day <= b:
-        yield day
-        day += dt.timedelta(days=7)
+BASE_UNIT_COST = {
+    "Pig starter": 0.82, "Pig grower": 0.68, "Pig finisher": 0.58,
+    "Broiler starter": 0.80, "Broiler grower": 0.72, "Broiler finisher": 0.63,
+    "Chick mash": 0.95,
+}
+WASTE_PCT = {"piggery": 0.012, "poultry": 0.015}
+MIN_STOCK_FLOOR = {"piggery": 120.0, "poultry": 100.0}
 
-piggery_stock = 400.0
-piggery_unit_cost = 0.68
-for wk in week_mondays(WINDOW_START, TODAY):
-    used = round(pig_daily_feed_by_domain_week.get(wk, 0), 1)
-    received = 0.0
-    unit_cost = piggery_unit_cost
-    if used > 0 or piggery_stock < 150:
-        received = round(noisy(max(used * 1.15, 250), 0.1), 0)
-    if wk == SPIKE_WEEK:
-        unit_cost = round(piggery_unit_cost * 1.22, 2)
-    waste = round(used * 0.012, 1)
-    opening = round(piggery_stock, 1)
-    closing = round(opening + received - used - waste, 1)
-    piggery_stock = closing
-    if used > 0 or received > 0:
-        rows["06_FEED_INVENTORY"].append(dict(
-            date=wk.isoformat(), domain="piggery", feed_type="Pig grower",
-            opening_kg=opening, received_kg=received, used_kg=used, waste_kg=waste,
-            closing_kg=closing, unit_cost_per_kg=unit_cost, supplier=FEED_SUPPLIER,
-            batch_ref=None))
+feed_lines = {}
+for (domain, feed_type, wk), kg in feed_usage_by_domain_type_week.items():
+    feed_lines.setdefault((domain, feed_type), {})[wk] = round(kg, 1)
 
-poultry_stock = 300.0
-poultry_unit_cost = 0.72
-for wk in week_mondays(WINDOW_START, TODAY):
-    used = round(poultry_daily_feed_by_week.get(wk, 0), 1)
-    received = 0.0
-    if used > 0 or poultry_stock < 100:
-        received = round(noisy(max(used * 1.15, 200), 0.1), 0)
-    waste = round(used * 0.015, 1)
-    opening = round(poultry_stock, 1)
-    closing = round(opening + received - used - waste, 1)
-    poultry_stock = closing
-    if used > 0 or received > 0:
-        rows["06_FEED_INVENTORY"].append(dict(
-            date=wk.isoformat(), domain="poultry", feed_type="Broiler grower",
-            opening_kg=opening, received_kg=received, used_kg=used, waste_kg=waste,
-            closing_kg=closing, unit_cost_per_kg=round(noisy(poultry_unit_cost, 0.04), 2),
-            supplier=FEED_SUPPLIER, batch_ref=None))
+spike_line = {"piggery": None, "poultry": None}
+for domain in ("piggery", "poultry"):
+    candidates = [(kg, ft) for (d_, ft), weeks in feed_lines.items() if d_ == domain
+                  for wk, kg in weeks.items() if wk == SPIKE_WEEK]
+    if candidates:
+        spike_line[domain] = max(candidates)[1]
+
+for (domain, feed_type), weeks in sorted(feed_lines.items()):
+    stock = 0.0
+    base_cost = BASE_UNIT_COST.get(feed_type, 0.70)
+    first = True
+    for wk in sorted(weeks):
+        used = weeks[wk]
+        received = 0.0
+        if used > 0 or (not first and stock < MIN_STOCK_FLOOR[domain]):
+            received = round(noisy(max(used * 1.15, 150), 0.1), 0)
+        elif first:
+            received = round(noisy(max(used * 1.3, 150), 0.1), 0)
+        first = False
+
+        unit_cost = round(noisy(base_cost, 0.04), 2)
+        if wk == SPIKE_WEEK and feed_type == spike_line.get(domain):
+            unit_cost = round(base_cost * 1.22, 2)
+
+        waste = round(used * WASTE_PCT[domain], 1)
+        opening = round(stock, 1)
+        closing = round(opening + received - used - waste, 1)
+        stock = closing
+
+        if used > 0 or received > 0:
+            rows["06_FEED_INVENTORY"].append(dict(
+                date=wk.isoformat(), domain=domain, feed_type=feed_type,
+                opening_kg=opening, received_kg=received, used_kg=used, waste_kg=waste,
+                closing_kg=closing, unit_cost_per_kg=unit_cost, supplier=FEED_SUPPLIER,
+                batch_ref=None))
 
 # ---------------------------------------------------------------------------
 # F3_FIELD_OPERATIONS, F4_SCOUTING_LOG, F5_HARVEST_LOG
@@ -654,7 +668,7 @@ for wk_row in rows["06_FEED_INVENTORY"]:
         if qty_bags <= 0:
             continue
         unit_cost = round(wk_row["unit_cost_per_kg"] * 50, 2)
-        item = "Pig grower 50kg" if domain == "piggery" else "Broiler grower 50kg"
+        item = f"{wk_row['feed_type']} 50kg"
         rows["02_EXPENSES"].append(dict(
             date=wk_row["date"], domain=domain, category="Feed", item=item,
             quantity=qty_bags, unit="bag", unit_cost=unit_cost, total_cost=None,
