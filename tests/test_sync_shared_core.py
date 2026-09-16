@@ -281,7 +281,7 @@ def test_sync_rejects_revenue_row_with_invalid_payment_status(tmp_path, db_conn,
 
 def _health_log_sheet(rows):
     return {
-        "header": ["date", "domain", "batch_code", "animal_tag", "event_type",
+        "header": ["date", "domain", "batch_ref", "animal_tag", "event_type",
                    "symptom", "diagnosis", "product", "dose", "animals_treated",
                    "cost", "withdrawal_until", "outcome", "administered_by"],
         "sample": ["2026-08-20", "poultry", "BRO-99", None, "Vaccination",
@@ -313,7 +313,7 @@ def test_sync_writes_health_log_row(tmp_path, db_conn, test_dsn):
 
     row = db_conn.execute(
         "SELECT event_type, symptom, cost FROM health_log "
-        "WHERE date = %s AND batch_code = %s",
+        "WHERE date = %s AND batch_ref = %s",
         ("2026-04-25", "PIG-B02"),
     ).fetchone()
     assert row[0] == "Inspection" and row[1] == "Diarrhoea" and float(row[2]) == 15
@@ -340,7 +340,7 @@ def test_sync_rejects_health_log_row_with_unknown_batch(tmp_path, db_conn, test_
 
     assert report.errors == [
         {"table": "health_log", "row": "2026-04-25/PIG-DOES-NOT-EXIST/Inspection",
-         "field": "batch_code", "value": "PIG-DOES-NOT-EXIST",
+         "field": "batch_ref", "value": "PIG-DOES-NOT-EXIST",
          "reason": "no matching batch_code in pig_batches"}
     ]
 

@@ -28,7 +28,9 @@ three domain modules)
       `pig_batches` or `poultry_batches` depending on the row's `domain`, since a
       single hard FK can't span two possible target tables; proven with both a
       valid piggery `batch_ref` and a rejected unknown one, plus separately for
-      `expenses` and `health_log`'s `batch_code` column)
+      `expenses` and `health_log`'s own reference column — correction: this was
+      later found to actually be named `batch_ref` too, not `batch_code` as
+      written here at the time; see ticket 06's findings)
 - [x] Formula-derived columns (`02_EXPENSES.total_cost`, `03_REVENUE.total_amount`,
       `04_LABOUR_LOG.labour_cost`) are synced as their resolved values, never as formula
       text — inherent to reading with `data_only=True`.

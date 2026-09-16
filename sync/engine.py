@@ -190,7 +190,11 @@ def _validate_batch_ref(table: str, record: dict, row_id: str,
 
 
 def _sync_farm_profile(wb, conn) -> int:
-    record = read_tab_rows(wb["00_FARM_PROFILE"])[0]
+    # Singleton table: read from row 3 (real workbooks have no row 4 at
+    # all here), and take the LAST row found so a fixture that models
+    # row 3 as a discardable sample plus a real row 4 still resolves to
+    # the real one.
+    record = read_tab_rows(wb["00_FARM_PROFILE"], min_row=3)[-1]
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS farm_profile (
@@ -235,7 +239,9 @@ def _sync_farm_profile(wb, conn) -> int:
 
 
 def _sync_staff(wb, conn, farm_code: str, lists: dict, errors: list) -> int:
-    records = read_tab_rows(wb["01_STAFF"])
+    # Row 3 holds a real staff member (S01), not a discardable sample -
+    # see read_tab_rows' docstring.
+    records = read_tab_rows(wb["01_STAFF"], min_row=3)
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS staff (
@@ -1302,7 +1308,7 @@ def _sync_health_log(wb, conn, errors: list) -> int:
         CREATE TABLE IF NOT EXISTS health_log (
             date DATE NOT NULL,
             domain TEXT,
-            batch_code TEXT NOT NULL,
+            batch_ref TEXT NOT NULL,
             animal_tag TEXT,
             event_type TEXT NOT NULL,
             symptom TEXT,
@@ -1314,23 +1320,23 @@ def _sync_health_log(wb, conn, errors: list) -> int:
             withdrawal_until DATE,
             outcome TEXT,
             administered_by TEXT,
-            PRIMARY KEY (date, batch_code, event_type)
+            PRIMARY KEY (date, batch_ref, event_type)
         )
     """)
     written = 0
     for record in records:
-        row_id = f"{record['date']}/{record['batch_code']}/{record['event_type']}"
-        if not _validate_batch_ref("health_log", record, row_id, "batch_code",
+        row_id = f"{record['date']}/{record['batch_ref']}/{record['event_type']}"
+        if not _validate_batch_ref("health_log", record, row_id, "batch_ref",
                                     conn, errors):
             continue
         conn.execute(
             """
             INSERT INTO health_log (
-                date, domain, batch_code, animal_tag, event_type, symptom,
+                date, domain, batch_ref, animal_tag, event_type, symptom,
                 diagnosis, product, dose, animals_treated, cost,
                 withdrawal_until, outcome, administered_by
             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (date, batch_code, event_type) DO UPDATE SET
+            ON CONFLICT (date, batch_ref, event_type) DO UPDATE SET
                 domain = EXCLUDED.domain,
                 animal_tag = EXCLUDED.animal_tag,
                 symptom = EXCLUDED.symptom,
@@ -1344,7 +1350,7 @@ def _sync_health_log(wb, conn, errors: list) -> int:
                 administered_by = EXCLUDED.administered_by
             """,
             (
-                record["date"], record["domain"], record["batch_code"],
+                record["date"], record["domain"], record["batch_ref"],
                 record["animal_tag"], record["event_type"], record["symptom"],
                 record["diagnosis"], record["product"], record["dose"],
                 record["animals_treated"], record["cost"],
