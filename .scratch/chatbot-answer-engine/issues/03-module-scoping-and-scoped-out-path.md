@@ -30,5 +30,5 @@ scope against; the cross-domain feed-cost query alone can't prove single-module 
       whichever inactive module triggered the refusal.
 - [ ] Tests go entirely through the `answer_question` seam, against real Postgres. The
       `scoped_out` refusal tests are zero-LLM (the refusal template is never phrased by
-      Claude); the "active module, answers normally" tests still make a real Claude call
+      OpenAI); the "active module, answers normally" tests still make a real OpenAI call
       for phrasing, same as ticket 01's success-path tests.

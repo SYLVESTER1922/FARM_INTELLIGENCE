@@ -75,10 +75,12 @@ affecting the answer given.
 16. As a developer, I want a single public seam (`answer_question`) covering the whole
     pipeline, so tests observe input/output behavior without depending on the matcher's,
     the LLM's, or the query catalog's internals.
-17. As a developer, I want the deterministic path tested exhaustively against a real
-    Postgres instance with zero LLM calls, so the bulk of the test suite stays fast, free,
-    and fully deterministic.
-18. As a developer, I want a small number of tests to call the real Claude API for the
+17. As a developer, I want intent resolution on the deterministic path tested
+    exhaustively against a real Postgres instance with zero LLM calls for that step, so
+    the bulk of the test suite's *intent-resolution logic* stays fast, free, and fully
+    deterministic (phrasing itself is still a real LLM call for every successful answer,
+    regardless of tier — see Testing Decisions).
+18. As a developer, I want a small number of tests to call the real OpenAI API for the
     fallback path, so the actual integration is proven end-to-end, not just simulated —
     the same reasoning that drove ticket 06 to test the real Supabase sync rather than
     trust a mock.
@@ -101,9 +103,13 @@ affecting the answer given.
     parameters/vocabularies it needs, so validation (closed-vocabulary checks, module
     mapping) can be driven generically rather than hand-coded per query.
 25. As a developer, I want the phrasing call and the fallback-extraction call to use the
-    same model (Claude Sonnet) for now, so the prompt/response contract stays simple
+    same model (OpenAI GPT-4o-mini) for now, so the prompt/response contract stays simple
     while the rest of the pipeline is still new — per-step model optimization is a later
     concern, not a day-one one.
+26. As a developer, I want this feature to use the same LLM provider (OpenAI) already
+    used elsewhere across Netrisyl's other products (JCC-Chatbot, the pharmacy
+    assistant), so the stack stays consistent instead of introducing a second provider
+    for one feature.
 
 ## Implementation Decisions
 
@@ -118,7 +124,7 @@ affecting the answer given.
   exactly one `query_id` and (b) can deterministically extract every parameter that query
   needs (e.g. domain, date range) from the question text. Anything less than a complete,
   unambiguous match falls through to tier 2.
-- **Tier 2 — LLM fallback**: a single Claude (Sonnet) call, invoked only when tier 1
+- **Tier 2 — LLM fallback**: a single OpenAI (GPT-4o-mini) call, invoked only when tier 1
   doesn't produce a complete match, extracting a structured intent object (`query_id` +
   parameters) from the question. Its output is validated against the exact same closed
   vocabularies tier 1 uses (known `query_id`s, known domain/metric values from
@@ -158,21 +164,28 @@ affecting the answer given.
     an inactive module
   - Write failures are caught and logged to application logs only; they never propagate
     into the request path or affect the answer returned.
-- **Model**: Claude Sonnet, one model, used for both the tier-2 fallback extraction call
-  and the phrasing call.
+- **Model**: OpenAI GPT-4o-mini, one model, used for both the tier-2 fallback extraction
+  call and the phrasing call — chosen to match the LLM provider already used for this
+  exact purpose in Netrisyl's other products (JCC-Chatbot, the pharmacy assistant),
+  keeping one provider across the stack rather than introducing Claude for a single
+  feature.
 
 ## Testing Decisions
 
 - All tests go through the single `answer_question` seam — black-box only; no test reaches
   into the matcher, the catalog dispatch, or prompt construction directly, matching this
   repo's existing testing discipline (`tests/test_sync_*.py`).
-- **Deterministic path**: tested exhaustively against a real local Postgres instance
-  (same pattern/instance as the sync engine's tests), zero LLM calls. Covers every
-  `query_id` in the starting catalog, module-scoping for both active and inactive
-  modules, the `query_log` row shape for success and `scoped_out` cases, and every
-  `failure_reason` reachable without an LLM (`no_match`, `ambiguous`,
-  `missing_parameter`).
-- **LLM fallback path**: a small number of tests call the real Claude API end-to-end —
+- **Deterministic path**: intent resolution is tested exhaustively against a real local
+  Postgres instance (same pattern/instance as the sync engine's tests), with zero LLM
+  calls for the resolution step itself. Covers every `query_id` in the starting catalog,
+  module-scoping for both active and inactive modules, the `query_log` row shape for
+  success and `scoped_out` cases, and every `failure_reason` reachable without an LLM
+  (`no_match`, `ambiguous`, `missing_parameter`). Note: phrasing is a real OpenAI call
+  for *every* successful answer regardless of tier, so "zero LLM calls" describes the
+  intent-resolution tests specifically, not the full success-path test (which still
+  costs one real API call for phrasing) — only the pure-refusal tests (`unresolved`,
+  `scoped_out`) are genuinely zero-LLM end-to-end.
+- **LLM fallback path**: a small number of tests call the real OpenAI API end-to-end —
   not mocked, not stubbed — proving the integration genuinely works, the same reasoning
   that drove ticket 06 to regression-test the real Supabase sync instead of trusting a
   simulated one. Not exhaustive scenario coverage: enough to prove (a) a valid fallback

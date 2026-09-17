@@ -34,7 +34,7 @@ guess. Every call — answered or not — is logged.
       template and logs `intent_source=unresolved`, `failure_reason=no_match`, `query_id`
       null.
 - [ ] The refusal template returned for `unresolved` never invokes any LLM call.
-- [ ] The phrasing step (for the success case) is a real Claude call whose prompt
+- [ ] The phrasing step (for the success case) is a real OpenAI call whose prompt
       receives only the already-computed final result of the query's execution — never
       raw row-level data. Phrasing is an LLM call for every successful answer regardless
       of which tier resolved the intent (this ticket only covers tier 1); it is not
@@ -46,4 +46,4 @@ guess. Every call — answered or not — is logged.
       (`tests/test_sync_*.py`). **"Zero LLM calls" applies only to the pure-refusal
       tests** (`unresolved` cases: no match, ambiguous, missing parameter) — intent
       resolution itself is zero-LLM in this ticket's scope (tier 1 only, no fallback
-      yet), but every success-path test still makes one real Claude call for phrasing.
+      yet), but every success-path test still makes one real OpenAI call for phrasing.

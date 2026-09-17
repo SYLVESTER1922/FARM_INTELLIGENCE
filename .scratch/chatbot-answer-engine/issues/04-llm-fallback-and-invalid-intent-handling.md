@@ -10,7 +10,7 @@ deterministic path uses, the system refuses rather than trusting a hallucinated 
 **Status:** ready-for-agent
 
 - [ ] When tier 1 doesn't produce a complete, unambiguous match (`no_match`, `ambiguous`,
-      or `missing_parameter`), a single Claude (Sonnet) call attempts structured-intent
+      or `missing_parameter`), a single OpenAI (GPT-4o-mini) call attempts structured-intent
       extraction (`query_id` + parameters) from the question before falling back to
       `unresolved`.
 - [ ] The LLM's structured intent is validated against the same closed vocabularies tier
@@ -27,7 +27,7 @@ deterministic path uses, the system refuses rather than trusting a hallucinated 
       tier-1-resolved one is (ticket 03's mechanism applies uniformly regardless of tier)
       — proving "module scoping enforced once, uniformly" actually holds across tiers,
       not just within tier 1.
-- [ ] A small number of tests (not exhaustive scenario coverage) call the real Claude API
+- [ ] A small number of tests (not exhaustive scenario coverage) call the real OpenAI API
       end-to-end: at least one proving a valid fallback produces a correct answer, and one
       proving an invalid fallback intent is caught and logged, not trusted.
 - [ ] All tier-1-only tests from tickets 01-03 continue to pass unmodified — tier 2 only
