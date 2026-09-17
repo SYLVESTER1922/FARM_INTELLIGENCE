@@ -28,5 +28,7 @@ scope against; the cross-domain feed-cost query alone can't prove single-module 
       them do — consistent with the workbook's stated purpose of refusing entirely rather
       than silently returning a partial cross-domain answer. `scoped_out_reason` records
       whichever inactive module triggered the refusal.
-- [ ] Tests go entirely through the `answer_question` seam, against real Postgres, zero
-      LLM calls.
+- [ ] Tests go entirely through the `answer_question` seam, against real Postgres. The
+      `scoped_out` refusal tests are zero-LLM (the refusal template is never phrased by
+      Claude); the "active module, answers normally" tests still make a real Claude call
+      for phrasing, same as ticket 01's success-path tests.
