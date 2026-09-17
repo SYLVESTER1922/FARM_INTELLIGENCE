@@ -39,6 +39,32 @@ FEED_COST_SPLIT_SQL = """
     ORDER BY domain
 """
 
+POULTRY_MORTALITY_SPIKE_SQL = """
+    SELECT b.batch_code,
+           ROUND(100.0 * SUM(d.deaths) / b.chicks_placed, 1) AS mortality_pct
+    FROM poultry_batches b
+    JOIN poultry_daily_log d ON d.batch_code = b.batch_code
+    GROUP BY b.batch_code, b.chicks_placed
+    ORDER BY mortality_pct DESC
+    LIMIT 1
+"""
+
+PIGGERY_DISEASE_OUTBREAK_SQL = """
+    SELECT batch_ref, COUNT(*) AS treatment_count, SUM(cost) AS total_vet_cost
+    FROM health_log
+    WHERE domain = 'piggery' AND event_type = 'Treatment'
+    GROUP BY batch_ref
+    ORDER BY treatment_count DESC
+    LIMIT 1
+"""
+
+CROP_DEBTOR_SQL = """
+    SELECT product, buyer, total_amount, batch_ref
+    FROM revenue
+    WHERE domain = 'crops' AND payment_status = 'Owing'
+    ORDER BY date
+"""
+
 CATALOG = [
     CatalogQuery(
         query_id="feed_cost_split",
@@ -50,5 +76,37 @@ CATALOG = [
         ],
         sql=FEED_COST_SPLIT_SQL,
         required_params=["period"],
+    ),
+    CatalogQuery(
+        query_id="poultry_mortality_spike",
+        phrases=[
+            "which poultry batch has the worst mortality",
+            "is there a mortality problem in the poultry house",
+            "which broiler batch is dying the most",
+            "poultry mortality rate by batch",
+            "is something wrong with a batch",
+        ],
+        sql=POULTRY_MORTALITY_SPIKE_SQL,
+    ),
+    CatalogQuery(
+        query_id="piggery_disease_outbreak",
+        phrases=[
+            "is there a disease outbreak in the piggery",
+            "which pig batch has health problems",
+            "any pigs being treated for illness",
+            "piggery disease treatment costs",
+            "is something wrong with a batch",
+        ],
+        sql=PIGGERY_DISEASE_OUTBREAK_SQL,
+    ),
+    CatalogQuery(
+        query_id="crop_debtor",
+        phrases=[
+            "which crop sales are unpaid",
+            "who owes us money for crops",
+            "any outstanding crop payments",
+            "unpaid grain sales",
+        ],
+        sql=CROP_DEBTOR_SQL,
     ),
 ]

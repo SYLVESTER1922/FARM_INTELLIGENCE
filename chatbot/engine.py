@@ -61,8 +61,11 @@ def answer_question(question: str, farm_code: str, dsn: str) -> Answer:
 def _phrase(question: str, computed: list) -> str:
     prompt = (
         "Answer the user's question in one short, natural sentence or two, "
-        "using ONLY the computed data below. Reproduce the numeric values "
-        "exactly as given (do not round or recompute anything).\n\n"
+        "using ONLY the computed data below. Every field in the data - "
+        "identifiers, labels, and numbers alike - is there because it's part "
+        "of the answer; mention all of them by their exact value, do not "
+        "round or recompute any number, and do not omit or invent anything "
+        "not present in the data.\n\n"
         f"Question: {question}\n"
         f"Computed data (JSON): {json.dumps(computed, default=str)}"
     )
