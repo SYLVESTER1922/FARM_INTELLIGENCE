@@ -15,8 +15,8 @@ GENERIC_ERROR_MESSAGE = "Something went wrong - please try again."
 
 
 def handle_message(question: str) -> str:
-    dsn = os.environ["FARM_INTELLIGENCE_DB_DSN"]
     try:
+        dsn = os.environ["FARM_INTELLIGENCE_DB_DSN"]
         answer = answer_question(question, farm_code=FARM_CODE, dsn=dsn)
     except Exception:
         return GENERIC_ERROR_MESSAGE
@@ -38,5 +38,30 @@ def build_interface() -> gr.ChatInterface:
     )
 
 
+def _load_local_dev_credentials() -> None:
+    """Only for running this app directly on a dev machine (python
+    ui/app.py) - never invoked when this module is imported under test or
+    deployed to Hugging Face Spaces (there, both env vars are provided by
+    HF Spaces Secrets already). Loads what's missing from the same local
+    credential files the rest of this project already uses, so `python
+    ui/app.py` works without the developer having to export anything by
+    hand first."""
+    if "OPENAI_API_KEY" not in os.environ:
+        key_path = os.path.expanduser("~/.openai_api_key")
+        if os.path.exists(key_path):
+            with open(key_path) as f:
+                os.environ["OPENAI_API_KEY"] = f.read().strip()
+
+    if "FARM_INTELLIGENCE_DB_DSN" not in os.environ:
+        env_path = os.path.join(os.path.dirname(__file__), "..", ".env.supabase")
+        if os.path.exists(env_path):
+            with open(env_path) as f:
+                for line in f:
+                    if line.startswith("SUPABASE_DB_DSN="):
+                        os.environ["FARM_INTELLIGENCE_DB_DSN"] = line.strip().split("=", 1)[1]
+                        break
+
+
 if __name__ == "__main__":
+    _load_local_dev_credentials()
     build_interface().launch()

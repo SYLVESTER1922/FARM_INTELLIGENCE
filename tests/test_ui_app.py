@@ -74,6 +74,14 @@ def test_handle_message_answers_a_real_question(tmp_path, db_conn, test_dsn, mon
     assert "45.00" in text or "45.0" in text
 
 
+def test_handle_message_returns_generic_message_when_dsn_env_var_missing(monkeypatch):
+    monkeypatch.delenv("FARM_INTELLIGENCE_DB_DSN", raising=False)
+
+    text = handle_message("hey")
+
+    assert text == GENERIC_ERROR_MESSAGE
+
+
 def test_handle_message_returns_generic_message_when_answer_question_raises(monkeypatch):
     monkeypatch.setenv("FARM_INTELLIGENCE_DB_DSN", "host=localhost dbname=doesnotmatter")
 
