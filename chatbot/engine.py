@@ -5,6 +5,7 @@ import openai
 import psycopg
 
 from chatbot.catalog import CATALOG
+from chatbot.fallback import llm_extract_intent, validate_llm_intent
 from chatbot.matcher import match
 
 UNRESOLVED_TEMPLATE = "I can't answer that yet - I don't have a way to look that up."
@@ -45,6 +46,14 @@ def answer_question(question: str, farm_code: str, dsn: str) -> Answer:
     _ensure_query_log_table(conn)
 
     result = match(question, CATALOG)
+    intent_source = "deterministic"
+
+    if result.query_id is None:
+        # tier 1 missed - one LLM attempt before giving up, no retry
+        tier1_reason = result.reason
+        raw = llm_extract_intent(question, CATALOG, _openai_client())
+        result = validate_llm_intent(raw, CATALOG, tier1_reason)
+        intent_source = "llm_fallback"
 
     if result.query_id is None:
         answer = Answer(
@@ -62,7 +71,7 @@ def answer_question(question: str, farm_code: str, dsn: str) -> Answer:
     if inactive_domain is not None:
         answer = Answer(
             text=SCOPED_OUT_TEMPLATE.format(module=inactive_domain),
-            intent_source="deterministic",
+            intent_source=intent_source,
             query_id=result.query_id,
             scoped_out_reason=inactive_domain,
         )
@@ -75,7 +84,7 @@ def answer_question(question: str, farm_code: str, dsn: str) -> Answer:
     computed = [dict(zip(columns, row)) for row in cursor.fetchall()]
 
     text = _phrase(question, computed)
-    answer = Answer(text=text, intent_source="deterministic", query_id=result.query_id)
+    answer = Answer(text=text, intent_source=intent_source, query_id=result.query_id)
     _log(conn, farm_code, question, answer)
     conn.close()
     return answer
