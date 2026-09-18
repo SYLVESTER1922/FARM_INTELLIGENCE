@@ -139,6 +139,19 @@ notes):
    live call — an explicitly-agreed, narrow second seam (validating our own
    closed-vocabulary check, not model behavior), not a silent black-box violation.
 
+**Known limitation, not a bug**: the query catalog only covers its 4 designed queries
+(`feed_cost_split`, `poultry_mortality_spike`, `piggery_disease_outbreak`,
+`crop_debtor`). Real usage against the deployed app (see `query_log`) confirmed this
+working as intended — e.g. "who owes us money?" resolves correctly via tier 1, but
+"what happened to the poultry in January?" and "what can I ask you?" both correctly
+refuse (`no_match`, with the LLM fallback genuinely tried and honestly declining both
+times, not a matching failure) because no catalog entry answers a general status
+summary or a capabilities/help question. This is the catalog's current scope working
+exactly as designed, not something broken — but "what can I ask you" being unanswerable
+is a real rough edge for a first-time user, worth a dedicated help/capabilities response
+at some point. Deliberately left as a known gap for a future session — expanding the
+catalog (or adding a help intent) is new scope, not a fix.
+
 **Testing conventions established across both layers** (precedent for future work):
 black-box only, through the one public seam; real local Postgres for every test, no
 mocking; a *small* number of tests hit real external services end-to-end (Supabase, then
