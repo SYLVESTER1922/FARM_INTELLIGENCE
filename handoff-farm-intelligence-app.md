@@ -167,11 +167,27 @@ exercise a specific branch.
 - Row convention: row 1 = purpose/cadence note, row 2 = headers, row 3 = sample, row 4+ =
   data — **except** `00_FARM_PROFILE` and `01_STAFF`, where row 3 holds real data (see
   sync bug #1 above). Never touch rows 1–3 when writing to the workbook itself.
-- Formula-bearing columns that must stay formulas if writing to the `.xlsx` directly:
-  `02_EXPENSES.total_cost`, `03_REVENUE.total_amount`, `04_LABOUR_LOG.labour_cost`,
-  `P2_PIG_DAILY_LOG.closing_count`, `P3_PIG_WEIGHTS.age_days`,
-  `P5_BREEDING_FARROWING.expected_farrow_date`, `F5_HARVEST_LOG.quantity_kg`. Confirmed
-  clean via LibreOffice recalculation in an earlier session: 1,876 formulas, 0 errors.
+- **Correction to an earlier claim in this doc**: a previous version stated the 7
+  formula-bearing columns (`02_EXPENSES.total_cost`, `03_REVENUE.total_amount`,
+  `04_LABOUR_LOG.labour_cost`, `P2_PIG_DAILY_LOG.closing_count`,
+  `P3_PIG_WEIGHTS.age_days`, `P5_BREEDING_FARROWING.expected_farrow_date`,
+  `F5_HARVEST_LOG.quantity_kg`) were "confirmed clean via LibreOffice recalculation in an
+  earlier session: 1,876 formulas, 0 errors." **That claim was never actually verified
+  against this file and turned out to be false.** Direct inspection found 100% of cells
+  in all 7 columns (1,869 rows total) had `None` cached values — `openpyxl` cannot
+  evaluate formulas, it only reads whatever a real spreadsheet engine last cached, and
+  this file's cache was never populated. This was invisible to every test in the project
+  (row counts and zero-sync-errors were checked, never these specific values) until a
+  live chatbot answer surfaced a `null` dollar amount. **Fixed**: these 7 columns'
+  formula strings were replaced with statically computed values (each formula's logic
+  replicated in Python from the literal formula text, e.g. `total_cost = quantity *
+  unit_cost`) via `gen_scripts/fix_formula_cached_values.py` — they are plain numbers/
+  dates now, not live formulas. Re-synced into both local Postgres and the real
+  Supabase project; confirmed with a live query that the crop debtor's `total_amount`
+  is `8681.12`, not `null`. One bug caught and fixed in the same pass: the fix script
+  initially missed staff member `S01`'s labour rate because `01_STAFF`'s row-3
+  exception (see the sync bug above) applied here too and wasn't accounted for at
+  first — every `S01` `labour_cost` came out `0` until that was fixed.
 - `gen_scripts/`: `generate_data.py` (full generator, seed=42), `write_workbook.py`,
   `verify.py`, `regenerate_feed_inventory.py`, `Netrisyl_Farm_Intelligence_Workbook.original_backup.xlsx`.
 
