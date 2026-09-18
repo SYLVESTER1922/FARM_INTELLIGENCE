@@ -8,6 +8,16 @@ from chatbot.catalog import CATALOG
 from chatbot.matcher import match
 
 UNRESOLVED_TEMPLATE = "I can't answer that yet - I don't have a way to look that up."
+SCOPED_OUT_TEMPLATE = (
+    "The {module} module is turned off for this farm - turn it on in the "
+    "farm profile to ask about that."
+)
+
+MODULE_ACTIVE_COLUMNS = {
+    "piggery": "module_piggery_active",
+    "poultry": "module_poultry_active",
+    "crops": "module_crops_active",
+}
 
 _OPENAI_CLIENT = None
 
@@ -47,6 +57,19 @@ def answer_question(question: str, farm_code: str, dsn: str) -> Answer:
         return answer
 
     catalog_entry = next(e for e in CATALOG if e.query_id == result.query_id)
+
+    inactive_domain = _find_inactive_domain(conn, farm_code, catalog_entry.domains)
+    if inactive_domain is not None:
+        answer = Answer(
+            text=SCOPED_OUT_TEMPLATE.format(module=inactive_domain),
+            intent_source="deterministic",
+            query_id=result.query_id,
+            scoped_out_reason=inactive_domain,
+        )
+        _log(conn, farm_code, question, answer)
+        conn.close()
+        return answer
+
     cursor = conn.execute(catalog_entry.sql, result.params)
     columns = [d.name for d in cursor.description]
     computed = [dict(zip(columns, row)) for row in cursor.fetchall()]
@@ -56,6 +79,22 @@ def answer_question(question: str, farm_code: str, dsn: str) -> Answer:
     _log(conn, farm_code, question, answer)
     conn.close()
     return answer
+
+
+def _find_inactive_domain(conn, farm_code: str, domains: list) -> str | None:
+    """Any domain the query touches with an inactive module fails scoping -
+    not only if all of them are inactive. See spec-chatbot-answer-engine.md's
+    cross-domain scoping rule."""
+    columns = ", ".join(MODULE_ACTIVE_COLUMNS[d] for d in domains)
+    row = conn.execute(
+        f"SELECT {columns} FROM farm_profile WHERE farm_code = %s", (farm_code,)
+    ).fetchone()
+    if row is None:
+        return None
+    for domain, active in zip(domains, row):
+        if not active:
+            return domain
+    return None
 
 
 def _phrase(question: str, computed: list) -> str:

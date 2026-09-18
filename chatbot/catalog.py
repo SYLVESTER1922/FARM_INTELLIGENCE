@@ -13,6 +13,7 @@ class CatalogQuery:
     query_id: str
     phrases: list         # example phrasings for the tier-1 matcher's cluster
     sql: str               # uses %(param)s placeholders for required_params
+    domains: list           # piggery/poultry/crops this query touches - for module scoping
     required_params: list = field(default_factory=list)
 
 
@@ -75,6 +76,7 @@ CATALOG = [
             "compare feed cost between piggery and poultry",
         ],
         sql=FEED_COST_SPLIT_SQL,
+        domains=["piggery", "poultry"],
         required_params=["period"],
     ),
     CatalogQuery(
@@ -87,6 +89,7 @@ CATALOG = [
             "is something wrong with a batch",
         ],
         sql=POULTRY_MORTALITY_SPIKE_SQL,
+        domains=["poultry"],
     ),
     CatalogQuery(
         query_id="piggery_disease_outbreak",
@@ -98,6 +101,7 @@ CATALOG = [
             "is something wrong with a batch",
         ],
         sql=PIGGERY_DISEASE_OUTBREAK_SQL,
+        domains=["piggery"],
     ),
     CatalogQuery(
         query_id="crop_debtor",
@@ -108,5 +112,6 @@ CATALOG = [
             "unpaid grain sales",
         ],
         sql=CROP_DEBTOR_SQL,
+        domains=["crops"],
     ),
 ]
