@@ -64,4 +64,10 @@ def _load_local_dev_credentials() -> None:
 
 if __name__ == "__main__":
     _load_local_dev_credentials()
-    build_interface().launch()
+    # Render (and similar PaaS hosts) assign the listen port via $PORT and
+    # require binding all interfaces; local dev falls back to Gradio's
+    # usual default port with the same 0.0.0.0 bind.
+    build_interface().launch(
+        server_name="0.0.0.0",
+        server_port=int(os.environ.get("PORT", 7860)),
+    )
