@@ -222,14 +222,21 @@ the `handle_message` boundary for the same reason).
 - **`~/.claude/settings.json` question still never answered.** Whether to set
   `permissions.blockReadsOutsideWorkingDirectories` from `true` to `false` (a global,
   not project-scoped, sandboxing setting). Still `true`. Ask before touching it.
-- **Supabase `JCC-Chatbot` project is still paused** (paused to free a slot under the
-  account's 2-active-project free-tier limit when `farm-intelligence` was created). The
-  user was asked whether to unpause it and chose to leave it paused. Revisit if needed:
-  pause something else to swap it back in, or upgrade the plan.
-- **Hugging Face `JCC_AFM_CHAT_BOT` Space (org `Netrisyl`) is still paused** — paused
-  during this project's HF deployment attempts, in case pausing it freed capacity for a
-  new Space (it didn't; the actual blocker was a plan-tier requirement, not a slot
-  count). Revisit whether to unpause it.
+- **Supabase `JCC-Chatbot` project is deliberately still paused, and must stay that
+  way** — paused to free a slot under the account's 2-active-project free-tier limit
+  when `farm-intelligence` was created. The user was asked whether to unpause it and
+  explicitly confirmed it should stay paused: unpausing it would require pausing
+  `farm-intelligence` back in exchange (only one can be active on the free tier), which
+  would take this project's own database down. **Do not unpause JCC's Supabase project
+  without the user explicitly re-confirming that tradeoff.**
+- **Hugging Face `JCC_AFM_CHAT_BOT` Space (org `Netrisyl`) has been unpaused** (it was
+  paused during this project's HF deployment attempts, to test whether freeing a slot
+  would satisfy HF's org-level billing gate — it didn't; the actual blocker was a
+  plan-tier requirement, not a slot count). The user asked for it to be unpaused, which
+  is done — the Space is active again, not `PAUSED`. It will still show a
+  `RUNTIME_ERROR` on startup (`httpx.ConnectError` reaching its Supabase backend), because
+  its own Supabase project remains intentionally paused per the item above. This is an
+  accepted, known tradeoff, not something to fix by unpausing JCC's database.
 - ~~Leftover Hugging Face Space `Sylvester1922/Netrisyl_farm_intelligence`~~ — **resolved,
   nothing to clean up.** It was created during this project's now-abandoned HF deployment
   attempt, but had already been deleted mid-session (during hardware-downgrade
