@@ -230,12 +230,12 @@ the `handle_message` boundary for the same reason).
   during this project's HF deployment attempts, in case pausing it freed capacity for a
   new Space (it didn't; the actual blocker was a plan-tier requirement, not a slot
   count). Revisit whether to unpause it.
-- **Leftover Hugging Face Space `Sylvester1922/Netrisyl_farm_intelligence`** — created
-  during this project's now-abandoned HF deployment attempt (superseded by the Render
-  deployment). It currently errors on load (stale ZeroGPU hardware assignment) and isn't
-  linked anywhere. The user asked for it to be deleted, but the saved `~/.huggingface_token`
-  had expired/been revoked (401) by the time cleanup was attempted — needs a fresh HF
-  token to actually delete it.
+- ~~Leftover Hugging Face Space `Sylvester1922/Netrisyl_farm_intelligence`~~ — **resolved,
+  nothing to clean up.** It was created during this project's now-abandoned HF deployment
+  attempt, but had already been deleted mid-session (during hardware-downgrade
+  diagnosis) before the user asked for cleanup; the subsequent recreate attempt failed
+  outright (402) without creating a repo. Confirmed via `list_spaces(author=
+  "Sylvester1922")`: no such Space exists.
 
 ## Key facts about the workbook (reference, don't re-derive)
 
