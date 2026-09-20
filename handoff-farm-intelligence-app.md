@@ -152,14 +152,69 @@ is a real rough edge for a first-time user, worth a dedicated help/capabilities 
 at some point. Deliberately left as a known gap for a future session — expanding the
 catalog (or adding a help intent) is new scope, not a fix.
 
-**Testing conventions established across both layers** (precedent for future work):
+### 3. Chatbot UI (`ui/`) — `spec-chatbot-ui.md`, tickets 01–02
+
+`ui/app.py`: a thin Gradio `ChatInterface` wrapper over `answer_question` —
+`handle_message(question) -> str` is the one seam under test, reading `FARM_CODE`
+(hardcoded, single farm) and `FARM_INTELLIGENCE_DB_DSN` from the environment, and
+catching any exception into a fixed generic error message so a farm owner never sees a
+raw traceback.
+
+**Deployed and live**: `https://netrisyl-farm-intelligence.onrender.com` — Render's free
+web service tier, public, no access control (this is synthetic demo data, the same
+situation as JCC-Chatbot and the Pharmacy Assistant). Verified with real questions
+against the live URL via `gradio_client`, not just a "build succeeded" assumption:
+"Who owes us money?" answers correctly; out-of-catalog questions ("What happened to the
+poultry in January?", "What's the weather like today?") refuse cleanly instead of
+erroring.
+
+**The platform ended up being Render, not Hugging Face, despite the spec's original
+intent** — full account in `.scratch/chatbot-ui/issues/02-deploy-public-web-app.md` and
+`spec-chatbot-ui.md`'s Further Notes. Short version: every free, compute-backed HF path
+was tested directly and confirmed blocked (`Netrisyl` org `cpu-basic`/ZeroGPU both need a
+paid org plan; the personal account's ZeroGPU tier has no GPU workload for this chatbot
+to legitimately satisfy ZeroGPU's `@spaces.GPU` startup check; the personal account's
+`cpu-basic` needs a PRO subscription). Render was the fallback: free web service, deploys
+straight from the public GitHub repo. Needed a root `requirements.txt` (HF Spaces
+provides this implicitly via the README's YAML frontmatter; Render doesn't), `ui/app.py`
+binding to Render's `$PORT`/`0.0.0.0` instead of Gradio's defaults, and running as
+`python -m ui.app` (not `python ui/app.py`) so the `chatbot` package resolves from the
+repo root.
+
+**A real deployment bug found and fixed**: the first live Render deploy answered every
+question with the generic error message despite verified-correct `OPENAI_API_KEY` and
+`FARM_INTELLIGENCE_DB_DSN`. Root cause: Supabase's **direct** DB host
+(`db.<ref>.supabase.co`) resolves only to IPv6 (`AAAA`, no `A` record) on this project's
+tier, and Render's free web services have no IPv6 egress — every DB connection attempt
+failed silently into the generic error message, with nothing logged (the handler
+deliberately swallows exceptions). Fixed by switching `FARM_INTELLIGENCE_DB_DSN` to
+Supabase's connection pooler (Supavisor) instead: `aws-0-us-west-2.pooler.supabase.com:
+6543`, user `postgres.<project_ref>`, transaction pool mode — this resolves to IPv4.
+Verified with a direct `psycopg` connection before rolling the change out to both
+`.env.supabase` and Render's env var.
+
+**A security incident during this diagnosis, disclosed and corrected in-session**: while
+inspecting the DSN to debug the above, a shell command's secret-redaction regex only
+matched `://user:pass@` URL syntax and missed this DSN's actual libpq `key=value` format
+— the real Supabase DB password was printed into the chat transcript in plaintext. This
+was flagged to the user immediately, the password was rotated via the Supabase
+Management API (new value never printed, generated locally and saved straight to
+`~/.supabase_farm_db_password`), and the rotation was verified with a real `psycopg`
+connection before `.env.supabase` and Render were updated to match. **Take this as a
+standing lesson, not just a one-off fix**: never assume a generic secret-redaction
+pattern covers every credential format — libpq DSNs, JSON blobs, and multi-field
+credentials each need their own check, and a password appearing in a DSN string is easy
+to miss if only URL-style credentials are guarded against.
+
+**Testing conventions established across all three layers** (precedent for future work):
 black-box only, through the one public seam; real local Postgres for every test, no
 mocking; a *small* number of tests hit real external services end-to-end (Supabase, then
 OpenAI) rather than exhaustive scenario coverage against a paid/slow API; a narrow,
 explicitly-agreed-with-the-user exception when a live service genuinely can't be made to
-exercise a specific branch.
+exercise a specific branch (the UI layer's exception-handling test injects a failure at
+the `handle_message` boundary for the same reason).
 
-- Combined test suite: **68 tests, all passing**, stable across repeated full-suite runs.
+- Combined test suite: **71 tests, all passing**, stable across repeated full-suite runs.
   Run with `source .venv/bin/activate && python -m pytest tests/`.
 
 ## Open items — unresolved, don't assume either way
@@ -171,6 +226,16 @@ exercise a specific branch.
   account's 2-active-project free-tier limit when `farm-intelligence` was created). The
   user was asked whether to unpause it and chose to leave it paused. Revisit if needed:
   pause something else to swap it back in, or upgrade the plan.
+- **Hugging Face `JCC_AFM_CHAT_BOT` Space (org `Netrisyl`) is still paused** — paused
+  during this project's HF deployment attempts, in case pausing it freed capacity for a
+  new Space (it didn't; the actual blocker was a plan-tier requirement, not a slot
+  count). Revisit whether to unpause it.
+- **Leftover Hugging Face Space `Sylvester1922/Netrisyl_farm_intelligence`** — created
+  during this project's now-abandoned HF deployment attempt (superseded by the Render
+  deployment). It currently errors on load (stale ZeroGPU hardware assignment) and isn't
+  linked anywhere. The user asked for it to be deleted, but the saved `~/.huggingface_token`
+  had expired/been revoked (401) by the time cleanup was attempted — needs a fresh HF
+  token to actually delete it.
 
 ## Key facts about the workbook (reference, don't re-derive)
 
@@ -204,28 +269,30 @@ exercise a specific branch.
 - `gen_scripts/`: `generate_data.py` (full generator, seed=42), `write_workbook.py`,
   `verify.py`, `regenerate_feed_inventory.py`, `Netrisyl_Farm_Intelligence_Workbook.original_backup.xlsx`.
 
-## Ultimate goal (stated by user) — now fully done, backend-wise
+## Ultimate goal (stated by user) — now fully done, end-to-end
 
 Build a chatbot on top of this farm data, able to answer cross-domain questions in plain
-language. **Both the data layer and the answer-engine backend are now done, tested, and
-deployed** — a real Supabase Postgres database, populated from the workbook, and a
-working `answer_question` seam that resolves questions (deterministic → LLM fallback),
+language. **The data layer, the answer-engine backend, and a public deployed UI are all
+done, tested, and live**: a real Supabase Postgres database populated from the workbook;
+a working `answer_question` seam that resolves questions (deterministic → LLM fallback),
 respects module scoping, never lets an LLM touch raw-row arithmetic, and logs everything
-for future catalog improvement.
+for future catalog improvement; and a Gradio chat app anyone can reach at
+`https://netrisyl-farm-intelligence.onrender.com`, verified end-to-end with real
+questions against the live URL.
 
-**Not built**: any UI/frontend for the chatbot (explicitly out of scope in the spec),
-multi-turn conversation handling (also explicitly out of scope — each question resolved
-independently), and any analysis/dashboarding on top of `query_log` (the table and write
-path exist; nothing reads it yet).
+**Not built**: multi-turn conversation handling (explicitly out of scope — each question
+resolved independently), any analysis/dashboarding on top of `query_log` (the table and
+write path exist; nothing reads it yet), farm-switching UI or a module selector
+(explicitly deferred — there's only one real farm today), and a dedicated help/
+capabilities response for questions like "what can I ask you?" (a known, documented rough
+edge — see the catalog-scope limitation above).
 
 ## Suggested skills for the next session
 
-- **mattpocock-skills:to-spec** / **to-tickets** — for the chatbot's UI/frontend, or for
-  wiring `answer_question` behind an actual API endpoint/deployment target, the same way
-  both prior specs were built.
-- **mattpocock-skills:grilling** — if the next concrete step (a real chatbot UI, an API
-  layer, a deployment target) has open architectural questions worth stress-testing
-  first, the way both the sync design and the chatbot's tiered-intent design were here.
+- **mattpocock-skills:grilling** / **to-spec** / **to-tickets** — if the next concrete
+  step (catalog expansion, a help/capabilities intent, multi-farm support) has open
+  design questions worth stress-testing first, the same way the sync, chatbot-engine,
+  and chatbot-UI designs were all grilled before being spec'd here.
 - **mattpocock-skills:tdd** — for any further catalog growth or new capability on
   `answer_question`; the seam and testing-split conventions above are now
   well-established precedent to follow.

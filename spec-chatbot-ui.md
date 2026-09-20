@@ -184,6 +184,18 @@ sees a raw stack trace.
 
 ## Further Notes
 
+- **Post-implementation correction (deployment platform)**: this spec specified Hugging
+  Face Spaces as the deployment target, matching the sibling products. During ticket 02,
+  every free, compute-backed HF path was tested directly and confirmed blocked: `Netrisyl`
+  org `cpu-basic` and ZeroGPU both require a paid Team/Enterprise plan; the personal
+  account's ZeroGPU tier lacks any GPU-bound function for this CPU-only chatbot to
+  legitimately satisfy ZeroGPU's startup check; and the personal account's `cpu-basic`
+  requires a PRO subscription. The app was deployed to Render's free web service tier
+  instead, at `https://netrisyl-farm-intelligence.onrender.com`. The public-visibility,
+  no-access-control, free-tier intent behind this spec's Deployment decision is
+  unchanged — only the specific platform is not HF. See
+  `.scratch/chatbot-ui/issues/02-deploy-public-web-app.md` for the full account,
+  including a Supabase IPv6/IPv4-pooler connectivity fix required for Render specifically.
 - This spec builds directly on the completed `spec-chatbot-answer-engine.md` (tickets
   01–04) and treats `answer_question` as a given, stable seam — not open for
   re-litigation here.
