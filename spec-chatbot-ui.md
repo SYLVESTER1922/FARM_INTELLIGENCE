@@ -14,10 +14,13 @@ fallback's added latency versus the near-instant deterministic path.
 
 ## Solution
 
-A single-page Gradio chat app, deployed to a **private** Hugging Face Space
-(password-protected via HF's built-in visibility setting) — matching the delivery
-pattern already used by Netrisyl's other chatbot products, JCC-Chatbot and the Pharmacy
-Assistant (confirmed directly, not assumed). A thin message-handler function wires
+A single-page Gradio chat app, deployed to a **public**, standard-visibility Hugging
+Face Space on the free CPU tier — matching the delivery pattern already used by
+Netrisyl's other chatbot products, JCC-Chatbot and the Pharmacy Assistant (confirmed
+directly, not assumed). All three run on synthetic/demo data, not real client data, so
+no access control is needed — this app's data is the same Chiedza Mixed Farm synthetic
+dataset used throughout this whole project, not a real farm's real records. A thin
+message-handler function wires
 Gradio's chat interface to the already-built `answer_question` seam: a hardcoded
 `farm_code` for this pass (multi-farm UI explicitly deferred — there's only one real
 farm today), the Supabase DSN sourced from an environment variable via HF Spaces
@@ -53,9 +56,10 @@ sees a raw stack trace.
    the company's tools.
 10. As a developer, I want the app deployed to a Hugging Face Space, matching where the
     sibling products already run, rather than standing up new hosting infrastructure.
-11. As a developer, I want the Space to be private/password-protected, so the farm's
-    financial and health data (debtor names and amounts, disease outbreaks, mortality
-    rates) is never exposed on a public, unauthenticated URL.
+11. As a developer, I want the Space to be public with no access control, matching how
+    JCC-Chatbot and the Pharmacy Assistant are already hosted, since this app's data is
+    the project's synthetic demo dataset, not a real farm's real financial or health
+    records.
 12. As a developer, I want the Supabase DSN sourced from an environment variable via HF
     Spaces Secrets, the same pattern already used for `OPENAI_API_KEY`, so there's one
     consistent credentials story rather than a special case for one value.
@@ -91,9 +95,14 @@ sees a raw stack trace.
   assumed, the second time in this project that "match what Netrisyl's other products
   already do" has settled a technology decision (the first was the LLM provider,
   OpenAI GPT-4o-mini).
-- **Deployment**: Hugging Face Spaces, with the Space set to **private** (HF's built-in
-  visibility/password setting) — not public, given the sensitivity of the data in the
-  chatbot's answers.
+- **Deployment**: Hugging Face Spaces, **public** visibility, free CPU tier — matching
+  how JCC-Chatbot and the Pharmacy Assistant are already hosted. No access control:
+  HF Spaces has no literal password-prompt feature separate from visibility (checked
+  directly against HF's own docs before building this) — true "Private" visibility
+  would require every viewer to have their own Hugging Face account and be added as a
+  collaborator, which isn't warranted here since this app's data is the project's
+  synthetic demo dataset, not a real farm's real records, the same situation as both
+  sibling products.
 - **Seam**: a single message-handler function (e.g. `handle_message(question: str) ->
   str`), wired directly to Gradio's chat component. Internally it calls
   `answer_question(question, farm_code=FARM_CODE, dsn=DSN)`:
@@ -125,9 +134,9 @@ sees a raw stack trace.
   No raw exception or traceback ever reaches the farm owner. This is the one piece of
   genuinely new application logic this layer adds beyond wiring.
 - **Explicitly deferred, not half-built**: farm-switching UI, a module selector/browser,
-  fallback-tier-specific latency messaging, and per-user roles/accounts within the Space
-  (a single shared password is sufficient given the solo/two-person context this whole
-  project operates in).
+  and fallback-tier-specific latency messaging. Access control (per-user roles/accounts,
+  a password gate) is not deferred — it's explicitly out of scope entirely, since the
+  Space is public with no access control by design (see Deployment above).
 
 ## Testing Decisions
 
@@ -150,9 +159,9 @@ sees a raw stack trace.
 - **Prior art**: `tests/test_chatbot_engine.py`'s fire-and-forget test (above), and the
   black-box-through-one-seam discipline already established across every prior ticket in
   this project.
-- **Not tested**: Gradio's own configuration, HF Spaces deployment settings, and the
-  private-Space password protection are verified manually (opening the deployed Space
-  and confirming it prompts for a password) rather than via automated tests, since
+- **Not tested**: Gradio's own configuration and HF Spaces deployment settings (public
+  visibility, free CPU tier) are verified manually (opening the deployed Space's URL and
+  confirming it loads and answers questions) rather than via automated tests, since
   they're platform configuration, not application code.
 
 ## Out of Scope
@@ -162,8 +171,9 @@ sees a raw stack trace.
 - A module selector/browser UI — pure free-text Q&A only for this pass.
 - Fallback-tier-specific latency messaging — would require `answer_question` to expose
   tier information before completing, a backend change out of scope here.
-- Per-user roles or accounts within the Space — a single shared password is sufficient
-  given the solo/two-person context.
+- Any access control at all (private visibility, a password gate, per-user roles) — the
+  Space is public by design, since this app's data is synthetic/demo, not real client
+  data, matching JCC-Chatbot and the Pharmacy Assistant.
 - Any changes to `chatbot/engine.py`, `chatbot/catalog.py`, `chatbot/matcher.py`, or
   `chatbot/fallback.py` — this spec is built entirely on top of the already-complete
   `answer_question` seam and doesn't modify it.
