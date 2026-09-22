@@ -1,14 +1,15 @@
 """
-Gradio app for the Farm Intelligence platform: the existing Chat tab (thin
-wrapper over chatbot.engine.answer_question - untouched by the dashboard
-work below) plus four dashboard tabs (Herd & Flock Overview, Financials,
-Findings & Alerts, Data Coverage) reading real data via ui/queries.py and
-charting it via ui/charts.py.
+Gradio app for the Farm Intelligence platform: a fixed-width left sidebar
+nav (Dashboard, Chat, Herd & Flock, Feeding, Health, Breeding, Finance,
+Reports, Settings) over a single-page content area, each nav item toggling
+a gr.Column "page" rather than using gr.Tabs. The Chat page's wiring
+(handle_message/_chat_fn) is untouched from the original tab-based layout.
 
-Layout/styling pattern (hero header, sidebar-card CSS, gr.themes.Soft,
-Plotly-in-gr.Plot) follows the Lobels Stores Intelligence reference app
-(github.com/SYLVESTER1922/stores-intelligence-assistant), adapted with farm
-branding and farm data - not copied verbatim.
+Layout pattern (sidebar nav + stat cards + chart grid) follows a supplied
+dashboard mockup reference; the underlying chart-type decisions (line for
+trends, donut for share-of-total, bar for comparisons) and the Lobels
+Stores Intelligence reference app's Plotly/CSS conventions carry over from
+the earlier dashboard work.
 """
 
 import base64
@@ -40,7 +41,7 @@ def _logo_data_uri() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Chat tab - unchanged chat/answer-engine wiring
+# Chat page - unchanged chat/answer-engine wiring
 # ---------------------------------------------------------------------------
 def handle_message(question: str) -> str:
     try:
@@ -59,7 +60,7 @@ def _chat_fn(message: str, history: list) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Dashboard tabs - data + chart wiring
+# Data + chart wiring, shared by every page
 # ---------------------------------------------------------------------------
 def _dashboard_conn():
     """A fresh connection for dashboard queries, same DSN/credential pattern
@@ -68,6 +69,48 @@ def _dashboard_conn():
     rather than crashing the whole page."""
     dsn = os.environ["FARM_INTELLIGENCE_DB_DSN"]
     return psycopg.connect(dsn, autocommit=True)
+
+
+def _stat_card_html(card):
+    pct = card["pct_change"]
+    if pct is None:
+        change_html = '<span class="stat-change stat-flat">— no prior-period baseline</span>'
+    else:
+        cls = "stat-up" if pct >= 0 else "stat-down"
+        arrow = "▲" if pct >= 0 else "▼"
+        change_html = f'<span class="stat-change {cls}">{arrow} {abs(pct)}% vs 30 days ago</span>'
+    return (
+        f'<div class="stat-card">'
+        f'<div class="stat-icon">{card["icon"]}</div>'
+        f'<div class="stat-body">'
+        f'<div class="stat-value">{card["value"]}</div>'
+        f'<div class="stat-label">{card["label"]}</div>'
+        f'{change_html}'
+        f'</div>'
+        f'</div>'
+    )
+
+
+def load_dashboard_stats():
+    try:
+        conn = _dashboard_conn()
+        cards = queries.fetch_dashboard_stats(conn)
+    except Exception as e:
+        return f'<div class="stat-card">Could not load stats: {str(e)[:150]}</div>'
+    return '<div class="stat-cards-row">' + "".join(_stat_card_html(c) for c in cards) + '</div>'
+
+
+def load_dashboard_charts():
+    try:
+        conn = _dashboard_conn()
+        herd_growth = charts.headcount_chart(queries.fetch_headcount_by_month(conn))
+        fcr = charts.fcr_chart(queries.fetch_fcr_by_batch(conn))
+        cost_vs_revenue = charts.expenses_vs_revenue_chart(queries.fetch_expenses_vs_revenue(conn))
+        expense_breakdown = charts.expense_breakdown_chart(queries.fetch_expense_breakdown(conn))
+        return herd_growth, fcr, cost_vs_revenue, expense_breakdown
+    except Exception as e:
+        empty = charts.empty_fig(f"Could not load: {str(e)[:150]}")
+        return empty, empty, empty, empty
 
 
 def load_herd_flock():
@@ -167,6 +210,81 @@ def load_data_coverage():
     return info, fig
 
 
+def load_feeding():
+    try:
+        conn = _dashboard_conn()
+        return charts.feed_cost_trend_chart(queries.fetch_feed_cost_by_month(conn))
+    except Exception as e:
+        return charts.empty_fig(f"Could not load: {str(e)[:150]}")
+
+
+def load_health():
+    try:
+        conn = _dashboard_conn()
+        chart = charts.health_cost_chart(queries.fetch_health_summary(conn))
+        events = queries.fetch_recent_health_events(conn)
+        rows = [[r["date"].isoformat(), r["domain"], r["batch_ref"], r["event_type"],
+                  r["diagnosis"] or "-", float(r["cost"] or 0)] for r in events]
+        return chart, rows
+    except Exception as e:
+        return charts.empty_fig(f"Could not load: {str(e)[:150]}"), []
+
+
+def load_breeding():
+    try:
+        conn = _dashboard_conn()
+        summary = queries.fetch_breeding_summary(conn)
+    except Exception as e:
+        return f"Could not load breeding data: {str(e)[:150]}", []
+
+    info = (
+        f"### Breeding Summary\n\n"
+        f"**Completed litters:** {summary['total_litters']}\n\n"
+        f"**Total piglets born alive:** {summary['total_born_alive']}\n\n"
+        f"**Total weaned:** {summary['total_weaned']}"
+    )
+    rows = [
+        [r["sow_tag"],
+         r["service_date"].isoformat() if r["service_date"] else "-",
+         r["farrow_date"].isoformat() if r["farrow_date"] else "Pending",
+         r["born_alive"] if r["born_alive"] is not None else "-",
+         r["stillborn"] if r["stillborn"] is not None else "-",
+         r["weaned_count"] if r["weaned_count"] is not None else "-"]
+        for r in summary["records"]
+    ]
+    return info, rows
+
+
+def load_settings():
+    try:
+        conn = _dashboard_conn()
+        profile = queries.fetch_farm_profile(conn)
+    except Exception as e:
+        return f"Could not load farm profile: {str(e)[:150]}"
+
+    if not profile:
+        return "No farm profile configured."
+
+    modules = [name for name, active in (
+        ("Piggery", profile["module_piggery_active"]),
+        ("Poultry", profile["module_poultry_active"]),
+        ("Crops", profile["module_crops_active"]),
+    ) if active]
+
+    return (
+        f"### Farm Configuration\n\n"
+        f"**Farm code:** {profile['farm_code']}\n\n"
+        f"**Farm name:** {profile['farm_name']}\n\n"
+        f"**Region:** {profile['region_district']}\n\n"
+        f"**Currency:** {profile['currency']}\n\n"
+        f"**Total area:** {profile['total_hectares']} ha\n\n"
+        f"**Financial year start:** {profile['financial_year_start']}\n\n"
+        f"**Active modules:** {', '.join(modules) if modules else 'None'}\n\n"
+        f"---\n*This is a read-only view of the farm's configuration - there "
+        f"is no editable settings system in this demo.*"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Layout
 # ---------------------------------------------------------------------------
@@ -174,60 +292,109 @@ CUSTOM_CSS = """
 .gradio-container {
     font-family: 'Inter', 'Helvetica Neue', system-ui, sans-serif !important;
     width: 100% !important;
-    max-width: 1500px !important;
+    max-width: 1600px !important;
     margin: 0 auto !important;
 }
-#farm-hero {
-    background: linear-gradient(135deg, #2F6D3A 0%, #1F4A28 100%);
-    border-radius: 16px;
-    padding: 24px 32px;
-    margin-bottom: 18px;
-    color: white;
+#slim-header {
+    background: white;
+    border-radius: 12px;
+    border: 1px solid #e5e7eb;
+    padding: 10px 20px;
+    margin-bottom: 14px;
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    gap: 24px;
-    box-shadow: 0 8px 24px rgba(47, 109, 58, 0.18);
-    position: relative;
-    overflow: hidden;
+    gap: 14px;
 }
-#farm-hero::after {
-    content: "";
-    position: absolute;
-    bottom: 0; left: 0; right: 0;
-    height: 4px;
-    background: linear-gradient(90deg, #C9A227 0%, #E4CC8E 50%, #C9A227 100%);
-}
-#farm-hero img.logo {
-    height: 140px;
+#slim-header img.logo {
+    height: 44px;
     width: auto;
-    background: white;
-    border-radius: 10px;
-    padding: 10px;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.18);
-    flex-shrink: 0;
     object-fit: contain;
+    flex-shrink: 0;
 }
-#farm-hero .titles h1 {
-    font-size: 1.8em !important;
-    font-weight: 700 !important;
-    margin: 0 0 4px 0 !important;
-    color: white !important;
-    letter-spacing: -0.5px;
-}
-#farm-hero .titles .brand-name {
-    font-size: 0.82em;
-    color: #C9A227;
-    letter-spacing: 3px;
-    font-weight: 600;
-    margin-bottom: 6px;
+#slim-header .brand-name {
+    font-size: 0.68em;
+    color: #2F6D3A;
+    letter-spacing: 2px;
+    font-weight: 700;
     text-transform: uppercase;
+    margin-bottom: 2px;
 }
-#farm-hero .titles .tagline {
-    font-size: 0.92em;
-    color: #d7e5d9;
-    margin: 0;
+#slim-header .farm-name {
+    font-size: 1.05em;
+    color: #1B2A4E;
+    font-weight: 700;
 }
+#sidebar-nav {
+    background: linear-gradient(180deg, #14261A 0%, #1B3B25 100%);
+    border-radius: 12px;
+    padding: 14px 0;
+    min-width: 200px !important;
+    max-width: 200px !important;
+}
+.nav-btn button {
+    background: transparent !important;
+    color: #cfe0d3 !important;
+    border: none !important;
+    box-shadow: none !important;
+    text-align: left !important;
+    justify-content: flex-start !important;
+    padding: 11px 20px !important;
+    font-size: 0.92em !important;
+    font-weight: 500 !important;
+    border-radius: 0 !important;
+    border-left: 3px solid transparent !important;
+    width: 100% !important;
+}
+.nav-btn button:hover {
+    background: rgba(255, 255, 255, 0.07) !important;
+    color: white !important;
+}
+.nav-btn-active button {
+    background: rgba(201, 162, 39, 0.16) !important;
+    color: white !important;
+    border-left: 3px solid #C9A227 !important;
+    font-weight: 700 !important;
+}
+.stat-cards-row {
+    display: flex;
+    gap: 14px;
+    flex-wrap: wrap;
+    margin-bottom: 18px;
+}
+.stat-card {
+    flex: 1 1 220px;
+    background: white;
+    border-radius: 12px;
+    border: 1px solid #e5e7eb;
+    padding: 16px 18px;
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+}
+.stat-icon {
+    font-size: 1.8em;
+    line-height: 1;
+}
+.stat-body { display: flex; flex-direction: column; }
+.stat-value {
+    font-size: 1.5em;
+    font-weight: 800;
+    color: #1B2A4E;
+    line-height: 1.1;
+}
+.stat-label {
+    font-size: 0.78em;
+    color: #6b7280;
+    margin-top: 2px;
+}
+.stat-change {
+    font-size: 0.75em;
+    font-weight: 700;
+    margin-top: 5px;
+}
+.stat-up { color: #2F6D3A; }
+.stat-down { color: #B23A2E; }
+.stat-flat { color: #9ca3af; font-weight: 500; }
 .sidebar-card {
     background: white;
     border-radius: 12px;
@@ -281,14 +448,39 @@ theme = gr.themes.Soft(
     block_border_color="#e5e7eb",
 )
 
+# (id, icon, label) - order fixed here and reused for both the sidebar
+# buttons and the page columns they toggle. "Dashboard" is the landing
+# page; "Chat" sits second, kept prominent per the redesign brief ("keep
+# Chat accessible - first sidebar item or a floating button, your call").
+NAV_ITEMS = [
+    ("dashboard", "🏠", "Dashboard"),
+    ("chat", "💬", "Chat"),
+    ("herd", "🐷", "Herd & Flock"),
+    ("feeding", "🧺", "Feeding"),
+    ("health", "🏥", "Health"),
+    ("breeding", "🍼", "Breeding"),
+    ("finance", "💰", "Finance"),
+    ("reports", "📊", "Reports"),
+    ("settings", "⚙️", "Settings"),
+]
+
+
+def _make_nav_click(index, count):
+    def _fn():
+        page_updates = [gr.update(visible=(i == index)) for i in range(count)]
+        btn_updates = [
+            gr.update(elem_classes=["nav-btn", "nav-btn-active"] if i == index else ["nav-btn"])
+            for i in range(count)
+        ]
+        return page_updates + btn_updates
+    return _fn
+
 
 def build_interface() -> gr.Blocks:
     # Gradio 6 moved theme/css from the Blocks constructor to .launch() -
     # both are applied where this is actually launched (see __main__ below).
     # fill_width=True - Gradio 6 defaults Blocks to shrink-wrap its content
-    # instead of filling the viewport, which was the main cause of the
-    # cramped/overlapping chart layout (narrow ~490px container even at a
-    # 1400px viewport width).
+    # instead of filling the viewport (root cause of an earlier layout bug).
     with gr.Blocks(title="Farm Intelligence", fill_width=True) as demo:
         logo_data_uri = _logo_data_uri()
         logo_img_html = (
@@ -296,54 +488,131 @@ def build_interface() -> gr.Blocks:
             if logo_data_uri else ""
         )
         gr.HTML(f"""
-        <div id="farm-hero">
-            <div class="titles">
-                <div class="brand-name">Farm Intelligence Platform</div>
-                <h1>Chiedza Mixed Farm</h1>
-                <p class="tagline">Piggery &middot; Poultry &middot; Crops &middot; Real-time farm data</p>
-            </div>
+        <div id="slim-header">
             {logo_img_html}
+            <div>
+                <div class="brand-name">Farm Intelligence Platform</div>
+                <div class="farm-name">Chiedza Mixed Farm</div>
+            </div>
         </div>
         """)
 
-        with gr.Tabs():
-            with gr.Tab("💬 Chat"):
-                gr.ChatInterface(
-                    fn=_chat_fn,
-                    title=None,
-                    description="Ask a question about your farm's piggery, poultry, or crops data.",
-                )
+        nav_buttons = []
+        pages = []
 
-            with gr.Tab("🐷 Herd & Flock Overview"):
-                mortality_plot = gr.Plot(label="", show_label=False)
-                fcr_plot = gr.Plot(label="", show_label=False)
-                headcount_plot = gr.Plot(label="", show_label=False)
+        with gr.Row():
+            with gr.Column(scale=0, elem_id="sidebar-nav"):
+                for i, (_id, icon, label) in enumerate(NAV_ITEMS):
+                    classes = ["nav-btn", "nav-btn-active"] if i == 0 else ["nav-btn"]
+                    nav_buttons.append(
+                        gr.Button(f"{icon}  {label}", elem_classes=classes)
+                    )
 
-            with gr.Tab("💰 Financials"):
-                trend_plot = gr.Plot(label="", show_label=False)
-                feed_split_plot = gr.Plot(label="", show_label=False)
-                gr.HTML('<div class="sidebar-card"><h3>Outstanding Payments</h3></div>')
-                debtors_table = gr.Dataframe(
-                    headers=["Date", "Domain", "Product", "Buyer",
-                             "Amount (USD)", "Batch Ref"],
-                    label="", show_label=False,
-                )
+            with gr.Column(scale=1):
+                # ---- Dashboard (landing page) ----------------------------
+                with gr.Column(visible=True) as page_dashboard:
+                    dashboard_stats_html = gr.HTML()
+                    with gr.Row():
+                        herd_growth_plot = gr.Plot(label="", show_label=False)
+                        dash_fcr_plot = gr.Plot(label="", show_label=False)
+                    with gr.Row():
+                        cost_revenue_plot = gr.Plot(label="", show_label=False)
+                        expense_breakdown_plot = gr.Plot(label="", show_label=False)
+                pages.append(page_dashboard)
 
-            with gr.Tab("🚨 Findings & Alerts"):
-                findings_html = gr.HTML()
+                # ---- Chat --------------------------------------------------
+                with gr.Column(visible=False) as page_chat:
+                    gr.ChatInterface(
+                        fn=_chat_fn,
+                        title=None,
+                        description="Ask a question about your farm's piggery, poultry, or crops data.",
+                    )
+                pages.append(page_chat)
 
-            with gr.Tab("📋 Data Coverage"):
-                with gr.Row():
-                    with gr.Column(scale=1):
-                        with gr.Group(elem_classes=["sidebar-card"]):
-                            coverage_info = gr.Markdown("Loading data coverage...")
-                    with gr.Column(scale=2):
-                        coverage_plot = gr.Plot(label="", show_label=False)
+                # ---- Herd & Flock -------------------------------------------
+                with gr.Column(visible=False) as page_herd:
+                    mortality_plot = gr.Plot(label="", show_label=False)
+                    fcr_plot = gr.Plot(label="", show_label=False)
+                    headcount_plot = gr.Plot(label="", show_label=False)
+                pages.append(page_herd)
 
+                # ---- Feeding -------------------------------------------------
+                with gr.Column(visible=False) as page_feeding:
+                    feeding_plot = gr.Plot(label="", show_label=False)
+                pages.append(page_feeding)
+
+                # ---- Health --------------------------------------------------
+                with gr.Column(visible=False) as page_health:
+                    health_plot = gr.Plot(label="", show_label=False)
+                    gr.HTML('<div class="sidebar-card"><h3>Recent Health Events</h3></div>')
+                    health_events_table = gr.Dataframe(
+                        headers=["Date", "Domain", "Batch Ref", "Event Type",
+                                 "Diagnosis", "Cost (USD)"],
+                        label="", show_label=False,
+                    )
+                pages.append(page_health)
+
+                # ---- Breeding ------------------------------------------------
+                with gr.Column(visible=False) as page_breeding:
+                    with gr.Row():
+                        with gr.Column(scale=1):
+                            with gr.Group(elem_classes=["sidebar-card"]):
+                                breeding_info = gr.Markdown("Loading breeding data...")
+                        with gr.Column(scale=2):
+                            gr.HTML('<div class="sidebar-card"><h3>Farrowing Records</h3></div>')
+                            breeding_table = gr.Dataframe(
+                                headers=["Sow Tag", "Service Date", "Farrow Date",
+                                         "Born Alive", "Stillborn", "Weaned"],
+                                label="", show_label=False,
+                            )
+                pages.append(page_breeding)
+
+                # ---- Finance -------------------------------------------------
+                with gr.Column(visible=False) as page_finance:
+                    trend_plot = gr.Plot(label="", show_label=False)
+                    feed_split_plot = gr.Plot(label="", show_label=False)
+                    gr.HTML('<div class="sidebar-card"><h3>Outstanding Payments</h3></div>')
+                    debtors_table = gr.Dataframe(
+                        headers=["Date", "Domain", "Product", "Buyer",
+                                 "Amount (USD)", "Batch Ref"],
+                        label="", show_label=False,
+                    )
+                pages.append(page_finance)
+
+                # ---- Reports (Findings & Alerts + Data Coverage) -------------
+                with gr.Column(visible=False) as page_reports:
+                    gr.HTML('<div class="sidebar-card"><h3>Findings &amp; Alerts</h3></div>')
+                    findings_html = gr.HTML()
+                    gr.HTML('<div class="sidebar-card"><h3>Data Coverage</h3></div>')
+                    with gr.Row():
+                        with gr.Column(scale=1):
+                            with gr.Group(elem_classes=["sidebar-card"]):
+                                coverage_info = gr.Markdown("Loading data coverage...")
+                        with gr.Column(scale=2):
+                            coverage_plot = gr.Plot(label="", show_label=False)
+                pages.append(page_reports)
+
+                # ---- Settings ------------------------------------------------
+                with gr.Column(visible=False) as page_settings:
+                    with gr.Group(elem_classes=["sidebar-card"]):
+                        settings_info = gr.Markdown("Loading farm configuration...")
+                pages.append(page_settings)
+
+        for i, btn in enumerate(nav_buttons):
+            btn.click(_make_nav_click(i, len(NAV_ITEMS)), outputs=pages + nav_buttons)
+
+        demo.load(load_dashboard_stats, outputs=[dashboard_stats_html])
+        demo.load(load_dashboard_charts,
+                  outputs=[herd_growth_plot, dash_fcr_plot, cost_revenue_plot,
+                           expense_breakdown_plot])
         demo.load(load_herd_flock, outputs=[mortality_plot, fcr_plot, headcount_plot])
         demo.load(load_financials, outputs=[trend_plot, feed_split_plot, debtors_table])
         demo.load(load_findings, outputs=[findings_html])
         demo.load(load_data_coverage, outputs=[coverage_info, coverage_plot])
+        demo.load(load_feeding, outputs=[feeding_plot])
+        demo.load(load_health, outputs=[health_plot, health_events_table])
+        demo.load(load_breeding, outputs=[breeding_info, breeding_table])
+        demo.load(load_settings, outputs=[settings_info])
 
     return demo
 

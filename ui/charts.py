@@ -248,3 +248,84 @@ def data_coverage_chart(counts):
         showlegend=False,
         **_layout(margin=dict(l=40, r=40, t=60, b=40)))
     return fig
+
+
+# ---------------------------------------------------------------------------
+# Dashboard home view + Feeding/Health pages
+# ---------------------------------------------------------------------------
+
+_EXPENSE_CATEGORY_COLORS = [
+    C_GREEN, C_GOLD, C_BLUE, C_RED, "#7A5C9E", "#3A9E8F", "#D98A4A", "#5C7A9E", "#9E5C7A",
+]
+
+
+@_safe
+def expense_breakdown_chart(rows):
+    """rows: [{'category', 'total'}, ...]"""
+    if not rows:
+        return empty_fig("No expense data available.")
+    labels = [r["category"] for r in rows]
+    values = [float(r["total"]) for r in rows]
+    colors = _EXPENSE_CATEGORY_COLORS[: len(labels)]
+    # Donut, not bars: same share-of-total reasoning as Records by Domain -
+    # this is "how does spend split across categories," not a ranking.
+    fig = go.Figure(go.Pie(
+        labels=labels, values=values, hole=0.55,
+        marker=dict(colors=colors, line=dict(color="white", width=2)),
+        textinfo="label+percent", automargin=True))
+    fig.update_layout(
+        title="Expense Breakdown by Category",
+        showlegend=False,
+        **_layout(margin=dict(l=40, r=40, t=60, b=40)))
+    return fig
+
+
+@_safe
+def feed_cost_trend_chart(data):
+    """data: {'piggery': [(month, cost)], 'poultry': [(month, cost)]} - same
+    line-chart treatment as mortality/expenses-vs-revenue: this is a
+    time-trend question."""
+    all_months = sorted(
+        set(m for m, _ in data["piggery"]) | set(m for m, _ in data["poultry"])
+    )
+    labels = [_month_label(m) for m in all_months]
+    pig_by_month = {_month_label(m): v for m, v in data["piggery"]}
+    poultry_by_month = {_month_label(m): v for m, v in data["poultry"]}
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=labels, y=[pig_by_month.get(m, 0) for m in labels],
+        name="Piggery", mode="lines+markers", line=dict(color=C_GREEN, width=3)))
+    fig.add_trace(go.Scatter(
+        x=labels, y=[poultry_by_month.get(m, 0) for m in labels],
+        name="Poultry", mode="lines+markers", line=dict(color=C_GOLD, width=3)))
+    fig.update_layout(
+        title="Feed Cost by Month (USD)",
+        yaxis=dict(title="Feed Cost (USD)", automargin=True),
+        xaxis=_month_xaxis(labels),
+        legend=BOTTOM_LEGEND,
+        **_layout())
+    return fig
+
+
+@_safe
+def health_cost_chart(rows):
+    """rows: [{'domain', 'event_type', 'event_count', 'total_cost'}, ...]"""
+    if not rows:
+        return empty_fig("No health data available.")
+    event_types = sorted(set(r["event_type"] for r in rows))
+    fig = go.Figure()
+    for domain, color in (("piggery", C_GREEN), ("poultry", C_GOLD)):
+        by_type = {r["event_type"]: float(r["total_cost"] or 0)
+                   for r in rows if r["domain"] == domain}
+        fig.add_trace(go.Bar(
+            x=event_types, y=[by_type.get(t, 0) for t in event_types],
+            name=domain.capitalize(), marker_color=color))
+    fig.update_layout(
+        title="Vet & Health Cost by Event Type (USD)",
+        barmode="group",
+        yaxis=dict(title="Cost (USD)", automargin=True),
+        xaxis=dict(automargin=True),
+        legend=BOTTOM_LEGEND,
+        **_layout(margin=dict(l=60, r=30, t=60, b=90)))
+    return fig

@@ -11,6 +11,8 @@ layer beyond what SQL already computed, same principle the chatbot's
 SQL-then-phrase split already established.
 """
 
+import datetime
+
 from chatbot.catalog import (
     CROP_DEBTOR_SQL,
     PIGGERY_DISEASE_OUTBREAK_SQL,
@@ -208,6 +210,10 @@ DATA_COVERAGE_DATE_RANGE_SQL = """
 """
 
 
+def _latest_date(conn):
+    return _rows(conn, DATA_COVERAGE_DATE_RANGE_SQL)[0]["max"]
+
+
 def fetch_data_coverage(conn):
     """Batch/planting counts per domain, and the operational date range.
     There is no sync-run audit table (the sync is an idempotent
@@ -226,3 +232,222 @@ def fetch_data_coverage(conn):
         "latest_date": date_range["max"],
         "counts": counts,
     }
+
+
+# ---------------------------------------------------------------------------
+# Dashboard home view: stat cards + expense breakdown donut
+#
+# There's no historical status log (pig_batches.status/poultry_batches.status
+# are current-only), so "was this batch active as of some past date" can't
+# honestly be answered from the status column - it's derived instead from
+# each batch's own logged date range (a batch is "active as of D" if it has
+# daily-log rows both on/before and on/after D). This avoids the inaccuracy
+# of using today's status to judge a batch's state 30 days ago.
+# ---------------------------------------------------------------------------
+
+TOTAL_PLACED_ASOF_SQL = """
+    SELECT COALESCE(SUM(start_count), 0) AS total
+    FROM pig_batches WHERE start_date <= %(cutoff)s
+"""
+
+TOTAL_CHICKS_ASOF_SQL = """
+    SELECT COALESCE(SUM(chicks_placed), 0) AS total
+    FROM poultry_batches WHERE placement_date <= %(cutoff)s
+"""
+
+ACTIVE_HEADCOUNT_ASOF_SQL = """
+    WITH batch_range AS (
+        SELECT batch_code, MIN(date) AS first_date, MAX(date) AS last_date
+        FROM {table} GROUP BY batch_code
+    ),
+    active_batches AS (
+        SELECT batch_code FROM batch_range
+        WHERE first_date <= %(cutoff)s AND last_date >= %(cutoff)s
+    ),
+    latest_count AS (
+        SELECT DISTINCT ON (batch_code) batch_code, {count_col} AS headcount
+        FROM {table} WHERE date <= %(cutoff)s
+        ORDER BY batch_code, date DESC
+    )
+    SELECT COALESCE(SUM(lc.headcount), 0) AS total
+    FROM active_batches ab JOIN latest_count lc ON lc.batch_code = ab.batch_code
+"""
+
+TOTAL_BORN_ASOF_SQL = """
+    SELECT COALESCE(SUM(born_alive), 0) AS total
+    FROM breeding_farrowing
+    WHERE farrow_date IS NOT NULL AND farrow_date <= %(cutoff)s
+"""
+
+DEATHS_IN_WINDOW_SQL = """
+    SELECT COALESCE(SUM(deaths), 0) AS total
+    FROM {table} WHERE date > %(start)s AND date <= %(end)s
+"""
+
+EXPENSE_BREAKDOWN_SQL = """
+    SELECT category, SUM(total_cost) AS total
+    FROM expenses GROUP BY category ORDER BY total DESC
+"""
+
+
+def _scalar(conn, sql, params):
+    return _rows(conn, sql, params)[0]["total"]
+
+
+def _active_headcount_asof(conn, cutoff):
+    pig = _scalar(conn, ACTIVE_HEADCOUNT_ASOF_SQL.format(
+        table="pig_daily_log", count_col="closing_count"), {"cutoff": cutoff})
+    poultry = _scalar(conn, ACTIVE_HEADCOUNT_ASOF_SQL.format(
+        table="poultry_daily_log", count_col="closing_birds"), {"cutoff": cutoff})
+    return pig, poultry
+
+
+def _pct_change(current, prior):
+    """None when a meaningful percentage can't be computed (no prior-period
+    baseline to compare against) - displayed as "New" rather than a
+    fabricated or divide-by-zero number."""
+    if not prior:
+        return None
+    return round((float(current) - float(prior)) / float(prior) * 100, 1)
+
+
+def _sum(pair):
+    return pair[0] + pair[1]
+
+
+def fetch_dashboard_stats(conn):
+    """Four headline stat cards, each as a (value as-of the latest real
+    data date) vs (the same computation as-of 30 days earlier) comparison -
+    entirely derived from real timestamped rows, never a fabricated
+    baseline. Returns a list of dicts: label, icon, value, unit, pct_change."""
+    ref_date = _latest_date(conn)
+    prior_date = ref_date - datetime.timedelta(days=30)
+    window_start = ref_date - datetime.timedelta(days=30)
+    prior_window_start = ref_date - datetime.timedelta(days=60)
+
+    total_now = (_scalar(conn, TOTAL_PLACED_ASOF_SQL, {"cutoff": ref_date}) +
+                 _scalar(conn, TOTAL_CHICKS_ASOF_SQL, {"cutoff": ref_date}))
+    total_prior = (_scalar(conn, TOTAL_PLACED_ASOF_SQL, {"cutoff": prior_date}) +
+                   _scalar(conn, TOTAL_CHICKS_ASOF_SQL, {"cutoff": prior_date}))
+
+    active_pig_now, active_poultry_now = _active_headcount_asof(conn, ref_date)
+    active_pig_prior, active_poultry_prior = _active_headcount_asof(conn, prior_date)
+    active_now = active_pig_now + active_poultry_now
+    active_prior = active_pig_prior + active_poultry_prior
+
+    born_now = _scalar(conn, TOTAL_BORN_ASOF_SQL, {"cutoff": ref_date})
+    born_prior = _scalar(conn, TOTAL_BORN_ASOF_SQL, {"cutoff": prior_date})
+
+    deaths_window = (
+        _scalar(conn, DEATHS_IN_WINDOW_SQL.format(table="pig_daily_log"),
+                {"start": window_start, "end": ref_date}) +
+        _scalar(conn, DEATHS_IN_WINDOW_SQL.format(table="poultry_daily_log"),
+                {"start": window_start, "end": ref_date})
+    )
+    deaths_prior_window = (
+        _scalar(conn, DEATHS_IN_WINDOW_SQL.format(table="pig_daily_log"),
+                {"start": prior_window_start, "end": prior_date}) +
+        _scalar(conn, DEATHS_IN_WINDOW_SQL.format(table="poultry_daily_log"),
+                {"start": prior_window_start, "end": prior_date})
+    )
+    base_now = _sum(_active_headcount_asof(conn, window_start))
+    base_prior = _sum(_active_headcount_asof(conn, prior_window_start))
+    mortality_rate = round(deaths_window / base_now * 100, 2) if base_now else 0.0
+    mortality_rate_prior = (
+        round(deaths_prior_window / base_prior * 100, 2) if base_prior else 0.0
+    )
+
+    return [
+        {"label": "Total Livestock Placed", "icon": "🐖", "value": f"{total_now:,}",
+         "pct_change": _pct_change(total_now, total_prior)},
+        {"label": "Active Headcount", "icon": "✅", "value": f"{active_now:,}",
+         "pct_change": _pct_change(active_now, active_prior)},
+        {"label": "Piglets Born (cumulative)", "icon": "🐷", "value": f"{born_now:,}",
+         "pct_change": _pct_change(born_now, born_prior)},
+        {"label": "Mortality Rate (30 days)", "icon": "⚠️", "value": f"{mortality_rate}%",
+         "pct_change": _pct_change(mortality_rate, mortality_rate_prior)},
+    ]
+
+
+def fetch_expense_breakdown(conn):
+    return _rows(conn, EXPENSE_BREAKDOWN_SQL)
+
+
+# ---------------------------------------------------------------------------
+# Feeding page
+# ---------------------------------------------------------------------------
+
+FEED_COST_BY_MONTH_SQL = """
+    SELECT date_trunc('month', date)::date AS month, domain,
+           SUM(used_kg * unit_cost_per_kg) AS cost
+    FROM feed_inventory GROUP BY 1, 2 ORDER BY 1, 2
+"""
+
+
+def fetch_feed_cost_by_month(conn):
+    rows = _rows(conn, FEED_COST_BY_MONTH_SQL)
+    return {
+        "piggery": [(r["month"], float(r["cost"] or 0)) for r in rows if r["domain"] == "piggery"],
+        "poultry": [(r["month"], float(r["cost"] or 0)) for r in rows if r["domain"] == "poultry"],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Health page
+# ---------------------------------------------------------------------------
+
+HEALTH_BY_EVENT_TYPE_SQL = """
+    SELECT domain, event_type, COUNT(*) AS event_count, SUM(cost) AS total_cost
+    FROM health_log GROUP BY domain, event_type ORDER BY domain, event_type
+"""
+
+RECENT_HEALTH_EVENTS_SQL = """
+    SELECT date, domain, batch_ref, event_type, diagnosis, cost
+    FROM health_log ORDER BY date DESC LIMIT 10
+"""
+
+
+def fetch_health_summary(conn):
+    return _rows(conn, HEALTH_BY_EVENT_TYPE_SQL)
+
+
+def fetch_recent_health_events(conn):
+    return _rows(conn, RECENT_HEALTH_EVENTS_SQL)
+
+
+# ---------------------------------------------------------------------------
+# Breeding page
+# ---------------------------------------------------------------------------
+
+FARROWING_RECORDS_SQL = """
+    SELECT sow_tag, service_date, farrow_date, born_alive, stillborn, weaned_count
+    FROM breeding_farrowing ORDER BY service_date
+"""
+
+
+def fetch_breeding_summary(conn):
+    rows = _rows(conn, FARROWING_RECORDS_SQL)
+    completed = [r for r in rows if r["farrow_date"] is not None]
+    return {
+        "records": rows,
+        "total_litters": len(completed),
+        "total_born_alive": sum(r["born_alive"] or 0 for r in completed),
+        "total_weaned": sum(r["weaned_count"] or 0 for r in completed),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Settings page - real farm configuration, not a fabricated settings UI
+# ---------------------------------------------------------------------------
+
+FARM_PROFILE_SQL = """
+    SELECT farm_code, farm_name, region_district, currency, total_hectares,
+           module_piggery_active, module_poultry_active, module_crops_active,
+           financial_year_start
+    FROM farm_profile LIMIT 1
+"""
+
+
+def fetch_farm_profile(conn):
+    rows = _rows(conn, FARM_PROFILE_SQL)
+    return rows[0] if rows else None
