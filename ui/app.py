@@ -305,12 +305,12 @@ CUSTOM_CSS = """
     background: linear-gradient(90deg, #ffffff 0%, #eaf2ec 50%, #ffffff 100%);
     border-radius: 12px;
     border: 1px solid #e5e7eb;
-    padding: 28px 36px;
+    padding: 40px 48px;
     margin-bottom: 16px;
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 24px;
+    gap: 32px;
     position: relative;
     overflow: hidden;
 }
@@ -325,7 +325,7 @@ the original full-height hero header used. */
     background: linear-gradient(90deg, #2F6D3A 0%, #C9A227 50%, #2F6D3A 100%);
 }
 #slim-header img.logo {
-    height: 130px;
+    height: 260px;
     width: auto;
     object-fit: contain;
     flex-shrink: 0;
@@ -333,27 +333,30 @@ the original full-height hero header used. */
 #slim-header .brand-text {
     display: flex;
     flex-direction: column;
-    justify-content: center;
+    justify-content: space-between;
+    align-self: stretch;
+    padding: 6px 0;
 }
 #slim-header .brand-name {
-    font-size: 0.72em;
+    font-size: 1.1em;
     color: #2F6D3A;
-    letter-spacing: 2.5px;
+    letter-spacing: 3.5px;
     font-weight: 700;
     text-transform: uppercase;
-    margin-bottom: 4px;
 }
 #slim-header .farm-name {
-    font-size: 1.25em;
+    font-size: 3em;
     color: #1B2A4E;
-    font-weight: 700;
+    font-weight: 800;
     line-height: 1.1;
-    margin-bottom: 6px;
+    letter-spacing: -0.5px;
 }
 #slim-header .domain-tags {
-    font-size: 0.82em;
-    color: #6b7280;
-    letter-spacing: 0.3px;
+    display: flex;
+    gap: 28px;
+    font-size: 1.15em;
+    color: #4b5563;
+    font-weight: 500;
 }
 #sidebar-nav {
     background: linear-gradient(180deg, #14261A 0%, #1B3B25 100%);
@@ -531,7 +534,9 @@ def build_interface() -> gr.Blocks:
             <div class="brand-text">
                 <div class="brand-name">Farm Intelligence Platform</div>
                 <div class="farm-name">Chiedza Mixed Farm</div>
-                <div class="domain-tags">🐷 Piggery &nbsp; 🐔 Poultry &nbsp; 🌾 Crops</div>
+                <div class="domain-tags">
+                    <span>🐷 Piggery</span><span>🐔 Poultry</span><span>🌾 Crops</span>
+                </div>
             </div>
             {logo_img_html}
         </div>
