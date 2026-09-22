@@ -157,6 +157,7 @@ def load_data_coverage():
 CUSTOM_CSS = """
 .gradio-container {
     font-family: 'Inter', 'Helvetica Neue', system-ui, sans-serif !important;
+    width: 100% !important;
     max-width: 1500px !important;
     margin: 0 auto !important;
 }
@@ -258,7 +259,11 @@ theme = gr.themes.Soft(
 def build_interface() -> gr.Blocks:
     # Gradio 6 moved theme/css from the Blocks constructor to .launch() -
     # both are applied where this is actually launched (see __main__ below).
-    with gr.Blocks(title="Farm Intelligence") as demo:
+    # fill_width=True - Gradio 6 defaults Blocks to shrink-wrap its content
+    # instead of filling the viewport, which was the main cause of the
+    # cramped/overlapping chart layout (narrow ~490px container even at a
+    # 1400px viewport width).
+    with gr.Blocks(title="Farm Intelligence", fill_width=True) as demo:
         gr.HTML("""
         <div id="farm-hero">
             <div class="titles">

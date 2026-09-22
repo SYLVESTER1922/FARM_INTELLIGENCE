@@ -10,6 +10,8 @@ the Lobels Stores Intelligence reference app
 farm-appropriate branding rather than copied verbatim.
 """
 
+import math
+
 import plotly.graph_objects as go
 
 C_GREEN = "#2F6D3A"    # piggery
@@ -25,10 +27,39 @@ PLOTLY_LAYOUT = dict(
     paper_bgcolor="white",
 )
 
+# Legend sits below the plot area, never near the title - the title/legend
+# overlap reported on the live deployment happened because the legend was
+# placed just above the plot (y=1.15), too close to the title above it.
+BOTTOM_LEGEND = dict(orientation="h", yanchor="top", y=-0.28, xanchor="center", x=0.5)
 
-def _layout(height=380, margin=None, **extra):
-    m = margin or dict(l=50, r=20, t=50, b=40)
+
+def _layout(height=420, margin=None, **extra):
+    # automargin=True on both axes (set per-chart below) lets Plotly grow
+    # the margin to fit tick/axis-title text instead of clipping it, so
+    # these are just sane starting points, not hard limits.
+    m = margin or dict(l=60, r=30, t=60, b=110)
     return dict(**PLOTLY_LAYOUT, height=height, margin=m, **extra)
+
+
+def _month_xaxis(labels, max_labels=6):
+    """Thin out and rotate x-axis tick labels for date-based charts so they
+    don't overlap - keeps every bar/point in the chart, but only labels up
+    to `max_labels` of them, evenly spaced, matching the "show every other
+    month" style fix. automargin=True lets Plotly reserve enough bottom
+    space for the rotated text rather than clipping it."""
+    n = len(labels)
+    step = max(1, math.ceil(n / max_labels))
+    shown = [labels[i] for i in range(0, n, step)]
+    return dict(
+        # categoryorder/categoryarray pin the full chronological order -
+        # without this, a chart with multiple traces covering different
+        # date ranges (e.g. headcount_chart's piggery/poultry series) gets
+        # ordered by each trace's own first-appearance order instead of by
+        # date, scrambling months that only appear in the later trace.
+        categoryorder="array", categoryarray=labels,
+        tickmode="array", tickvals=shown, ticktext=shown,
+        tickangle=-45, automargin=True,
+    )
 
 
 def empty_fig(msg="No data available"):
@@ -83,8 +114,10 @@ def mortality_chart(data):
         name="Poultry", marker_color=C_GOLD))
     fig.update_layout(
         title="Mortality by Month (Deaths)",
-        barmode="group", yaxis_title="Deaths",
-        legend=dict(orientation="h", y=1.15),
+        barmode="group",
+        yaxis=dict(title="Deaths", automargin=True),
+        xaxis=_month_xaxis(labels),
+        legend=BOTTOM_LEGEND,
         **_layout())
     return fig
 
@@ -100,17 +133,28 @@ def fcr_chart(rows):
     colors = [C_GREEN if r["domain"] == "piggery" else C_GOLD for r in rows]
     fig = go.Figure(go.Bar(
         x=values, y=names, orientation="h", marker_color=colors,
-        text=[f"{v:.2f}" for v in values], textposition="auto"))
+        text=[f"{v:.2f}" for v in values], textposition="outside",
+        cliponaxis=False))  # keep outside-bar text from being clipped at
+                            # the plot edge - this was the FCR chart's cutoff
+    max_val = max(values) if values else 1
     fig.update_layout(
-        title="Feed Conversion Ratio by Batch (lower is better)",
-        xaxis_title="FCR (kg feed / kg gain)",
-        **_layout(height=max(320, 40 * len(rows)), margin=dict(l=90, r=20, t=50, b=40)))
+        title="Feed Conversion Ratio by Batch",
+        xaxis=dict(title="FCR (kg feed / kg gain, lower is better)",
+                    range=[0, max_val * 1.2], automargin=True),
+        yaxis=dict(automargin=True),
+        **_layout(height=max(340, 42 * len(rows)),
+                  margin=dict(l=20, r=40, t=60, b=60)))
     return fig
 
 
 @_safe
 def headcount_chart(data):
     """data: {'piggery': [(month, headcount)], 'poultry': [(month, headcount)]}"""
+    all_months = sorted(
+        set(m for m, _ in data["piggery"]) | set(m for m, _ in data["poultry"])
+    )
+    labels = [_month_label(m) for m in all_months]
+
     fig = go.Figure()
     if data["piggery"]:
         fig.add_trace(go.Scatter(
@@ -125,9 +169,11 @@ def headcount_chart(data):
             yaxis="y2"))
     fig.update_layout(
         title="Headcount Trend by Month",
-        yaxis=dict(title="Piggery headcount"),
-        yaxis2=dict(title="Poultry headcount", overlaying="y", side="right"),
-        legend=dict(orientation="h", y=1.15),
+        xaxis=_month_xaxis(labels),
+        yaxis=dict(title="Piggery headcount", automargin=True),
+        yaxis2=dict(title="Poultry headcount", overlaying="y", side="right",
+                     automargin=True),
+        legend=BOTTOM_LEGEND,
         **_layout())
     return fig
 
@@ -151,8 +197,10 @@ def expenses_vs_revenue_chart(data):
         name="Revenue", marker_color=C_BLUE))
     fig.update_layout(
         title="Expenses vs Revenue by Month (USD)",
-        barmode="group", yaxis_title="USD",
-        legend=dict(orientation="h", y=1.15),
+        barmode="group",
+        yaxis=dict(title="USD", automargin=True),
+        xaxis=_month_xaxis(labels),
+        legend=BOTTOM_LEGEND,
         **_layout())
     return fig
 
@@ -167,11 +215,14 @@ def feed_cost_by_domain_chart(rows):
     colors = [C_GREEN if r["domain"] == "piggery" else C_GOLD for r in rows]
     fig = go.Figure(go.Bar(
         x=names, y=values, marker_color=colors,
-        text=[f"${v:,.2f}" for v in values], textposition="outside"))
+        text=[f"${v:,.2f}" for v in values], textposition="outside",
+        cliponaxis=False))
     fig.update_layout(
         title="Feed Cost by Domain (Full Period, USD)",
-        yaxis_title="Feed Cost (USD)",
-        **_layout())
+        yaxis=dict(title="Feed Cost (USD)", automargin=True,
+                    range=[0, max(values) * 1.2]),
+        xaxis=dict(automargin=True),
+        **_layout(margin=dict(l=60, r=30, t=60, b=50)))
     return fig
 
 
@@ -183,6 +234,10 @@ def data_coverage_chart(counts):
     colors = [C_GREEN, C_GOLD, C_BLUE]
     fig = go.Figure(go.Bar(
         x=labels, y=values, marker_color=colors,
-        text=values, textposition="outside"))
-    fig.update_layout(title="Records by Domain", yaxis_title="Count", **_layout())
+        text=values, textposition="outside", cliponaxis=False))
+    fig.update_layout(
+        title="Records by Domain",
+        yaxis=dict(title="Count", automargin=True, range=[0, max(values) * 1.25]),
+        xaxis=dict(automargin=True),
+        **_layout(margin=dict(l=60, r=30, t=60, b=50)))
     return fig
