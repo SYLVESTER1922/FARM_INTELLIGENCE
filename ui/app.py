@@ -302,18 +302,30 @@ CUSTOM_CSS = """
     margin: 0 auto !important;
 }
 #slim-header {
-    background: white;
+    background: linear-gradient(90deg, #ffffff 0%, #eaf2ec 50%, #ffffff 100%);
     border-radius: 12px;
     border: 1px solid #e5e7eb;
-    padding: 14px 32px;
+    padding: 28px 36px;
     margin-bottom: 16px;
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 24px;
+    position: relative;
+    overflow: hidden;
+}
+/* A thin accent bar anchors the bar as one cohesive surface rather than
+"two corners with dead space between" - same accent-gradient treatment
+the original full-height hero header used. */
+#slim-header::after {
+    content: "";
+    position: absolute;
+    bottom: 0; left: 0; right: 0;
+    height: 3px;
+    background: linear-gradient(90deg, #2F6D3A 0%, #C9A227 50%, #2F6D3A 100%);
 }
 #slim-header img.logo {
-    height: 112px;
+    height: 130px;
     width: auto;
     object-fit: contain;
     flex-shrink: 0;
@@ -322,8 +334,6 @@ CUSTOM_CSS = """
     display: flex;
     flex-direction: column;
     justify-content: center;
-    border-right: 1px solid #e5e7eb;
-    padding-right: 24px;
 }
 #slim-header .brand-name {
     font-size: 0.72em;
