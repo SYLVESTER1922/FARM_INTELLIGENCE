@@ -3,10 +3,10 @@
 Session focus, across the project's full history: turning a 23-tab Netrisyl Farm
 Intelligence Google Sheets workbook into a populated demo dataset, syncing it into a real
 Postgres/Supabase database, building a full chatbot answer engine on top of it, deploying
-it as a public web app, and then growing that into a multi-tab intelligence platform
-(dashboard tabs alongside chat) — landing a live, deployed system that answers the
-project's original motivating question ("how does feed cost split between pigs and
-chickens") in plain language, for real, against the cloud database, at
+it as a public web app, and then growing that into a full intelligence platform (a
+sidebar-nav dashboard with 9 pages alongside chat) — landing a live, deployed system
+that answers the project's original motivating question ("how does feed cost split
+between pigs and chickens") in plain language, for real, against the cloud database, at
 `https://netrisyl-farm-intelligence.onrender.com`.
 
 ## Repo state
@@ -60,6 +60,15 @@ chickens") in plain language, for real, against the cloud database, at
   - `5713a62` — moved the header logo from left to right (dropped the `.hero-left`
     wrapper so `.titles` and the logo are the hero's two direct flex children, letting
     `justify-content:space-between` push the logo right) and enlarged it, 90px → 140px.
+  - `943324a` — this doc's previous update (header logo move/enlarge).
+  - `44382ee` — **major redesign**: replaced the top `gr.Tabs` bar with a fixed-width
+    left sidebar nav (9 items) + slim top header + a new Dashboard landing page (4 stat
+    cards + 2×2 chart grid). Added three real new pages (Feeding, Health, Breeding) and
+    a Settings page, all reading previously-unused real tables. See section 4.
+  - `47a5adf` — fixed a real CSS selector bug that made the new sidebar render as boxed
+    white pills instead of one continuous panel, enlarged the header logo further
+    (72px), and replaced two stat cards' misleading "0.0% vs 30 days ago" with honest
+    "Since &lt;date&gt;" captions. See section 4.
 - Throwaway branch `prototype/supabase-domain-join-test` (`447dbec`) — the SQLite
   prototype that first found the sync's feed_inventory grain issue. Deliberately not
   merged into `main` (prototypes are a primary source kept on their own branch here).
@@ -254,15 +263,54 @@ the `handle_message` boundary for the same reason).
 
 ### 4. Dashboard (`ui/queries.py`, `ui/charts.py`) — built directly, no spec/tickets
 
-Turns the chat-only app into a multi-tab platform: **Chat** (unchanged) plus **Herd &
-Flock Overview**, **Financials**, **Findings & Alerts**, and **Data Coverage**. Built by
-explicit user instruction to skip the spec/ticket process this time ("just build it
+**Current layout (as of `44382ee`): a left sidebar nav, not top tabs.** Turns the
+chat-only app into a full platform: a fixed-width (200px) dark navy/green sidebar with
+9 items — **Dashboard** (landing page), **Chat**, **Herd & Flock**, **Feeding**,
+**Health**, **Breeding**, **Finance**, **Reports**, **Settings** — each toggling a
+`gr.Column` "page" in a single content area (not `gr.Tabs` — see the CSS-bug note
+below for why that distinction mattered), under a slim top header (logo + branding).
+Built by explicit user instruction to skip the spec/ticket process ("just build it
 against the real Supabase data we already have synced, and I'll review as it comes
 together") — so unlike the three layers above, there is no `spec-*.md` file or
 `.scratch/*/issues/` tickets for this work, and no automated tests were written for
 `ui/queries.py` or `ui/charts.py` (verified instead by running every query/chart
-function, and the full deployed app, against real data — see below). If this layer grows
-further, consider whether it's earned a proper spec at that point.
+function, and the full deployed app via Playwright screenshots, against real data — see
+below). If this layer grows further, consider whether it's earned a proper spec at that
+point.
+
+**Nav-item content mapping** (only 4 of the 9 items existed before the redesign; the
+rest are genuinely new real-data pages, not placeholders):
+- **Dashboard** (new): 4 stat cards (Total Livestock Placed, Active Headcount, Piglets
+  Born, Mortality Rate — see the stat-card methodology and caption-vs-percentage note
+  below) + a 2×2 chart grid reusing existing chart-building functions (Herd Growth =
+  `headcount_chart`, FCR = `fcr_chart`, Cost vs Revenue = `expenses_vs_revenue_chart`)
+  plus one new chart, `expense_breakdown_chart` (donut, expenses grouped by
+  `expenses.category` — Feed/Labour/Vet/etc. — distinct from the existing Feed Cost by
+  Domain bar on the Finance page, which was left untouched).
+- **Herd & Flock**, **Finance**: unchanged content from the original tab-based layout,
+  just now a sidebar destination instead of a tab.
+- **Reports** (new, houses two prior tabs): **Findings & Alerts** and **Data Coverage**
+  both live here, stacked with section headers — neither item was in the user's
+  literal 9-item nav list, so this was a judgment call (both are "reporting" views, and
+  splitting them across mismatched domain-named items would have fragmented
+  self-contained content the user asked to keep intact).
+- **Feeding** (new): `feed_cost_trend_chart` — monthly feed cost by domain, a line
+  chart, from `feed_inventory` (previously only aggregated to a single full-period
+  total on the Finance page).
+- **Health** (new): `health_cost_chart` (grouped bar, vet/health cost by event type ×
+  domain) + a real recent-events table, both from `health_log` (previously unused by
+  any UI page).
+- **Breeding** (new): a real summary (completed litters, total born alive, total
+  weaned) + a farrowing-records table, from `breeding_farrowing`/`sow_register`
+  (previously unused). Only 3 real records exist in this dataset (2 completed litters,
+  1 pending) — small but real, not padded out.
+- **Settings** (new): read-only farm configuration (farm code/name, region, currency,
+  total hectares, financial year start, active modules) from `farm_profile`
+  (previously unused by any UI page) — explicitly labeled "read-only... no editable
+  settings system in this demo" rather than building a fake settings UI with nothing
+  behind it.
+- **Chat**: placed second in the sidebar (right after Dashboard), not a floating
+  button — the user's own "your call" latitude on this specific point.
 
 - **Reference app**: the user pointed at a sibling Netrisyl product,
   `github.com/SYLVESTER1922/stores-intelligence-assistant` (Lobels Biscuits
@@ -343,6 +391,44 @@ further, consider whether it's earned a proper spec at that point.
   header to the right, and enlarged (90px → 140px) - a one-line CSS/HTML change
   (`#farm-hero`'s `justify-content: space-between` now applies directly between
   `.titles` and the logo `<img>`, no wrapper div needed).
+- **Sidebar redesign** (`44382ee`) replaced the top `gr.Tabs` bar with the 9-item
+  sidebar described above. Page-switching uses `gr.Column(visible=...)` toggled by
+  `gr.Button.click()` handlers (18 outputs per click: 9 page-visibility updates + 9
+  nav-button `elem_classes` updates for the active-state highlight) — **not**
+  `gr.Tabs`, because full control over the sidebar's visual structure (fixed width,
+  vertical layout, custom active-state styling) was easier to get right with plain
+  buttons + columns than by re-skinning Gradio's own tab-nav DOM via CSS.
+  `demo.load()` eager-population still fires for every page regardless of which one is
+  visible on load, same as before - switching from `gr.Tab` to `gr.Column(visible=...)`
+  didn't change that.
+- **Stat-card "as of a past date" methodology**: `pig_batches.status`/
+  `poultry_batches.status` are current-only (no historical log), so "was this batch
+  active 30 days ago" can't honestly be read from today's status column - it's
+  derived instead from each batch's own logged date range (active as of date D if it
+  has `pig_daily_log`/`poultry_daily_log` rows both on/before and on/after D). This
+  avoids a real staleness bug a naive "check current status" approach would have
+  introduced.
+- **A real CSS bug found and fixed** (`47a5adf`): the sidebar initially rendered as
+  "individually boxed white pills with dark gaps between them" instead of one
+  continuous panel. Root cause: the CSS selector was `.nav-btn button { ... }` (a
+  descendant selector), but `nav-btn` is a class Gradio applies directly to the
+  `<button>` element itself (via `elem_classes`), not to a wrapper around one - so the
+  selector never matched anything, and every nav item silently fell back to Gradio's
+  default white/boxed button styling plus the containing column's default 16px flex
+  gap. Fixed by changing the selector to `button.nav-btn` and setting the sidebar
+  column's `gap: 0 !important`. **Lesson for any future `elem_classes` CSS**: always
+  verify with a real DOM inspection (`getComputedStyle` via Playwright) that a
+  selector actually matches before assuming a "not working" style is a specificity
+  problem rather than a selector-shape problem - this one silently did nothing for an
+  entire redesign pass before being caught by screenshot review.
+- **Stat-card percentage fix** (`47a5adf`): "Total Livestock Placed" and "Piglets Born"
+  are lifetime cumulative totals, so a "vs 30 days ago" percentage on them reads as
+  ~0% on almost every real day even though the total itself (2,102 / 24) is large and
+  meaningful - a real misleading pattern the user caught. Both now show an honest
+  "Since &lt;earliest real date&gt;" caption instead (e.g. "Since 2025-10-10"), computed
+  from real `MIN(start_date)`/`MIN(farrow_date)` queries, not hand-typed. Active
+  Headcount and Mortality Rate kept their genuine percentage comparisons since those
+  are real flow/snapshot metrics that actually vary period to period.
 
 ## Open items — unresolved, don't assume either way
 
@@ -433,12 +519,16 @@ Postgres database populated from the workbook; a working `answer_question` seam 
 resolves questions (deterministic → LLM fallback), respects module scoping, never lets
 an LLM touch raw-row arithmetic, and logs everything for future catalog improvement.
 
-The scope then grew, by explicit user direction, into a **multi-tab intelligence
-platform** — matching the pattern of sibling Netrisyl product Lobels Biscuits
-Intelligence. Live at `https://netrisyl-farm-intelligence.onrender.com`: **Chat** (the
-original goal, unchanged) plus **Herd & Flock Overview**, **Financials**, **Findings &
-Alerts**, and **Data Coverage** (see section 4). All verified end-to-end against the live
-URL, not just "the deploy succeeded."
+The scope then grew, by explicit user direction, into a full **intelligence platform**
+with a sidebar-nav layout — matching the pattern of sibling Netrisyl product Lobels
+Biscuits Intelligence initially (tabs), then redesigned to match a supplied dashboard
+mockup (sidebar + stat cards + chart grid). Live at
+`https://netrisyl-farm-intelligence.onrender.com`: a 9-item left sidebar — **Dashboard**
+(new landing page: stat cards + chart grid), **Chat** (the original goal, unchanged),
+**Herd & Flock**, **Feeding**, **Health**, **Breeding**, **Finance**, **Reports**
+(Findings & Alerts + Data Coverage), **Settings** (see section 4 for the full nav-item
+mapping and what's genuinely new vs. carried over). All verified end-to-end against the
+live URL via real Playwright screenshots, not just "the deploy succeeded."
 
 **In progress, not yet built**: NL-to-SQL catalog expansion — a `/grill-me` session is
 mid-flight, round 1 settled, round 2 awaiting the user's answers (see Open Items).
