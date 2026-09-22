@@ -2,10 +2,12 @@
 
 Session focus, across the project's full history: turning a 23-tab Netrisyl Farm
 Intelligence Google Sheets workbook into a populated demo dataset, syncing it into a real
-Postgres/Supabase database, and building a full chatbot answer engine on top of it —
-landing a working, tested pipeline that answers the project's original motivating question
-("how does feed cost split between pigs and chickens") in plain language, for real,
-against the cloud database.
+Postgres/Supabase database, building a full chatbot answer engine on top of it, deploying
+it as a public web app, and then growing that into a multi-tab intelligence platform
+(dashboard tabs alongside chat) — landing a live, deployed system that answers the
+project's original motivating question ("how does feed cost split between pigs and
+chickens") in plain language, for real, against the cloud database, at
+`https://netrisyl-farm-intelligence.onrender.com`.
 
 ## Repo state
 
@@ -28,14 +30,29 @@ against the cloud database.
     implementation started; "zero LLM calls" only ever applied to pure-refusal tests).
   - `7eddd6a` → `7cab355` — chatbot tickets 01–04, all `done`. Chatbot spec fully
     implemented.
+  - `85c91b7` — `spec-chatbot-ui.md`, `1642ff9` — its two local tickets.
+  - `06d1e1d` — ticket 01: local Gradio chat app. `73964ea` — fixed the missing-env-var
+    bug (every question returned the generic error). `43f339f` — fixed the 7
+    formula-bearing columns' null cached values (see the workbook section below).
+    `2b92e5a` — documented the catalog's narrow scope as a known limitation, not a bug.
+  - `eccf091` — corrected the UI spec from private/password-protected to public/no-auth.
+    `1d4ba1b` → `e30044b` — ticket 02: deployed to Render (not HF — see below) at
+    `https://netrisyl-farm-intelligence.onrender.com`.
+  - `5b2c42c` / `f669b57` — doc corrections after HF Space cleanup and clarifying the
+    JCC pause tradeoff (see Open Items).
+  - `1e6dbf2` — added the dashboard: Herd & Flock, Financials, Findings & Alerts, Data
+    Coverage tabs (see section 4 below).
 - Throwaway branch `prototype/supabase-domain-join-test` (`447dbec`) — the SQLite
   prototype that first found the sync's feed_inventory grain issue. Deliberately not
   merged into `main` (prototypes are a primary source kept on their own branch here).
 
-## What's built, in two layers
+## What's built, in four layers
 
-**Both specs below are complete.** Read them plus their ticket files for full design
-rationale and acceptance criteria — this doc summarizes, it doesn't duplicate them.
+**The first three layers each have a complete spec** — read them plus their ticket files
+for full design rationale and acceptance criteria; this doc summarizes, it doesn't
+duplicate them. **The fourth (dashboard) was built directly, by explicit user
+instruction, with no spec/ticket ceremony** — see section 4 for why and what that means
+for its documentation here.
 
 ### 1. Sync engine (`sync/`) — `spec-supabase-sync.md`, tickets 01–06
 
@@ -217,8 +234,86 @@ the `handle_message` boundary for the same reason).
 - Combined test suite: **71 tests, all passing**, stable across repeated full-suite runs.
   Run with `source .venv/bin/activate && python -m pytest tests/`.
 
+### 4. Dashboard (`ui/queries.py`, `ui/charts.py`) — built directly, no spec/tickets
+
+Turns the chat-only app into a multi-tab platform: **Chat** (unchanged) plus **Herd &
+Flock Overview**, **Financials**, **Findings & Alerts**, and **Data Coverage**. Built by
+explicit user instruction to skip the spec/ticket process this time ("just build it
+against the real Supabase data we already have synced, and I'll review as it comes
+together") — so unlike the three layers above, there is no `spec-*.md` file or
+`.scratch/*/issues/` tickets for this work, and no automated tests were written for
+`ui/queries.py` or `ui/charts.py` (verified instead by running every query/chart
+function, and the full deployed app, against real data — see below). If this layer grows
+further, consider whether it's earned a proper spec at that point.
+
+- **Reference app**: the user pointed at a sibling Netrisyl product,
+  `github.com/SYLVESTER1922/stores-intelligence-assistant` (Lobels Biscuits
+  Intelligence — Chat, Intelligence Reports, Material Lookup, Data Coverage tabs), as
+  the pattern to follow. Cloned read-only into an isolated scratch folder (never the
+  project directory, never modified), studied its tab structure, Plotly-in-`gr.Plot`
+  charting, `gr.Blocks`/`gr.Tabs`/`gr.themes.Soft` layout, and its `_layout`/
+  `empty_fig`/`_safe` chart-helper pattern — then adapted it with farm branding and farm
+  data, not copied verbatim. `ui/charts.py`'s color palette (green for piggery, gold for
+  poultry) and helper functions mirror Lobels' structure directly; the CSS hero-header/
+  sidebar-card pattern in `ui/app.py` does too, restyled.
+- **`ui/queries.py`**: read-only SQL against the real synced schema — monthly mortality
+  and headcount by domain, FCR by batch (methodology note below), expenses-vs-revenue by
+  month, feed cost by domain (the project's original founding question, now a chart, full
+  period rather than one month), a debtor/outstanding-payments query, and the three
+  planted findings pulled via the *exact same* `CatalogQuery` SQL constants
+  (`chatbot/catalog.py`) the chatbot itself answers from — not hand-typed numbers.
+- **`ui/charts.py`**: Plotly figure builders consuming that data. No arithmetic beyond
+  what SQL already computed, same principle as the chatbot's SQL-then-phrase split.
+- **FCR methodology** (worth knowing if these numbers are ever questioned): feed
+  conversion ratio = total feed fed to a batch ÷ its total liveweight gain.
+  Liveweight gain is approximated as `(latest sampled avg weight − starting avg weight) ×
+  latest closing headcount` for pigs, and `(latest sampled avg weight in kg) × latest
+  closing headcount` for poultry (day-old chick weight, ~40g against a ~2kg market
+  weight, is treated as negligible — standard practice for a rough broiler FCR, and there
+  is no chick starting-weight column in `poultry_batches` to subtract anyway). Verified
+  against real data: results came out in realistic ranges (pigs ~2.3–2.65, broilers
+  ~1.6–2.0), which is a sanity check, not a formal accuracy claim.
+- **Data Coverage's "freshness" indicator is deliberately not a fabricated sync
+  timestamp**: the sync is an idempotent truncate+reload with no write-audit column, so
+  there is no real "last synced at" fact to show. Mirrors exactly how the Lobels
+  reference app solves the identical problem — using the latest real record date across
+  the domain tables as the freshness signal instead of inventing a sync-log timestamp
+  that doesn't exist.
+- **Verification**: every query/chart function run directly against real Supabase data;
+  the full app run locally (`python -m ui.app`) and exercised through the real Gradio
+  HTTP API via `gradio_client` (all 5 endpoints: `/_chat_fn` plus the four
+  `demo.load`-wired dashboard endpoints); then redeployed in place to the same Render URL
+  and re-verified there the same way, not assumed from "the deploy succeeded."
+- **New public API surface**: `/load_herd_flock`, `/load_financials`, `/load_findings`,
+  and `/load_data_coverage` are exposed as public Gradio API endpoints on the deployed
+  app, callable directly by URL, same as `/_chat_fn` already was. Consistent with the
+  app's existing public/no-auth posture (synthetic demo data), but worth knowing this is
+  now four endpoints of surface area, not one.
+
 ## Open items — unresolved, don't assume either way
 
+- **A `/grill-me` session on expanding the chatbot's catalog into NL-to-SQL is
+  mid-flight, not abandoned.** Goal: move beyond the fixed 4-query catalog so the
+  chatbot "responds to any information that is available," per explicit user request.
+  Round 1 is **settled**: hybrid approach (keep the existing catalog as a fast tier-1/
+  tier-2 path for the 3 planted findings + feed-cost-split, add NL-to-SQL as a new
+  fallback tier only when the catalog doesn't match at all), full 23-tab/all-domain
+  schema scope, still refuse honestly for anything genuinely outside the database
+  (no hallucinating beyond real data), and keep the interaction one-shot (no
+  conversation memory) for this pass. Round 2 was **asked but never answered** — the
+  user redirected to the dashboard work before responding. Six open questions, each with
+  a recommended answer already proposed, still need the user's decision: (1) SQL safety
+  guardrails (read-only DB role + syntactic allowlist + timeout/row cap vs. prompt-only
+  trust), (2) how the LLM learns the schema (hand-maintained semantic description vs.
+  live `information_schema` introspection), (3) module-scoping detection for dynamic
+  queries (LLM also returns structured domain tags, validated against the closed
+  vocabulary, vs. parsing table names out of the generated SQL), (4) what `query_log`
+  should record for this tier (the generated SQL itself vs. just `intent_source`), (5)
+  testing strategy (real DB + real OpenAI, assert on answer content only, never on exact
+  generated SQL text), (6) retry policy on malformed generated SQL (one bounded retry
+  with the DB error fed back vs. none). **Do not silently proceed with NL-to-SQL
+  implementation without first getting the user's round-2 answers** — the recommended
+  answers are proposals, not decisions.
 - **`~/.claude/settings.json` question still never answered.** Whether to set
   `permissions.blockReadsOutsideWorkingDirectories` from `true` to `false` (a global,
   not project-scoped, sandboxing setting). Still `true`. Ask before touching it.
@@ -276,33 +371,51 @@ the `handle_message` boundary for the same reason).
 - `gen_scripts/`: `generate_data.py` (full generator, seed=42), `write_workbook.py`,
   `verify.py`, `regenerate_feed_inventory.py`, `Netrisyl_Farm_Intelligence_Workbook.original_backup.xlsx`.
 
-## Ultimate goal (stated by user) — now fully done, end-to-end
+## Ultimate goal (stated by user) — chatbot done end-to-end; now a growing platform
 
-Build a chatbot on top of this farm data, able to answer cross-domain questions in plain
-language. **The data layer, the answer-engine backend, and a public deployed UI are all
-done, tested, and live**: a real Supabase Postgres database populated from the workbook;
-a working `answer_question` seam that resolves questions (deterministic → LLM fallback),
-respects module scoping, never lets an LLM touch raw-row arithmetic, and logs everything
-for future catalog improvement; and a Gradio chat app anyone can reach at
-`https://netrisyl-farm-intelligence.onrender.com`, verified end-to-end with real
-questions against the live URL.
+Original goal: build a chatbot on top of this farm data, able to answer cross-domain
+questions in plain language. **That's fully done, tested, and live**: a real Supabase
+Postgres database populated from the workbook; a working `answer_question` seam that
+resolves questions (deterministic → LLM fallback), respects module scoping, never lets
+an LLM touch raw-row arithmetic, and logs everything for future catalog improvement.
 
-**Not built**: multi-turn conversation handling (explicitly out of scope — each question
-resolved independently), any analysis/dashboarding on top of `query_log` (the table and
-write path exist; nothing reads it yet), farm-switching UI or a module selector
-(explicitly deferred — there's only one real farm today), and a dedicated help/
-capabilities response for questions like "what can I ask you?" (a known, documented rough
-edge — see the catalog-scope limitation above).
+The scope then grew, by explicit user direction, into a **multi-tab intelligence
+platform** — matching the pattern of sibling Netrisyl product Lobels Biscuits
+Intelligence. Live at `https://netrisyl-farm-intelligence.onrender.com`: **Chat** (the
+original goal, unchanged) plus **Herd & Flock Overview**, **Financials**, **Findings &
+Alerts**, and **Data Coverage** (see section 4). All verified end-to-end against the live
+URL, not just "the deploy succeeded."
+
+**In progress, not yet built**: NL-to-SQL catalog expansion — a `/grill-me` session is
+mid-flight, round 1 settled, round 2 awaiting the user's answers (see Open Items).
+
+**Not built, still deferred**: multi-turn conversation handling (explicitly out of
+scope — each question resolved independently), any analysis/dashboarding on top of
+`query_log` specifically (the observability table and write path exist; nothing reads
+*that* table yet — the new dashboard reads the operational farm-data tables directly,
+not `query_log`), farm-switching UI or a module selector (explicitly deferred — there's
+only one real farm today), and a dedicated help/capabilities response for questions like
+"what can I ask you?" (a known, documented rough edge — see the catalog-scope limitation
+above).
 
 ## Suggested skills for the next session
 
-- **mattpocock-skills:grilling** / **to-spec** / **to-tickets** — if the next concrete
-  step (catalog expansion, a help/capabilities intent, multi-farm support) has open
-  design questions worth stress-testing first, the same way the sync, chatbot-engine,
-  and chatbot-UI designs were all grilled before being spec'd here.
+- **mattpocock-skills:grilling** — **first priority if the NL-to-SQL catalog expansion
+  is the next task**: resume the mid-flight session rather than restarting it. Round 1 is
+  settled (hybrid tiering, full schema, honest refusal, one-shot); round 2's six
+  questions (SQL safety, schema description method, module-scoping detection, `query_log`
+  fields, testing strategy, retry policy) are asked with recommended answers already
+  proposed, just waiting on the user. See Open Items for the exact questions.
+- **mattpocock-skills:to-spec** / **to-tickets** — once the grilling session above closes
+  out, or for any other feature (a help/capabilities intent, multi-farm support) with
+  open design questions worth stress-testing first, the same way the sync,
+  chatbot-engine, and chatbot-UI designs were all grilled before being spec'd.
 - **mattpocock-skills:tdd** — for any further catalog growth or new capability on
   `answer_question`; the seam and testing-split conventions above are now
-  well-established precedent to follow.
+  well-established precedent to follow. Note: the dashboard (section 4) deliberately did
+  *not* follow this — no spec, no tickets, no automated tests, by explicit user
+  instruction — so don't assume that layer follows the same conventions as the other
+  three without checking first.
 - **code-review** or **simplify** — `sync/engine.py` (20 near-identical per-table sync
   functions) and `chatbot/catalog.py` (a growing list of near-identical `CatalogQuery`
   entries) are both candidates for a table-driven refactor now that the pattern is
