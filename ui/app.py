@@ -338,27 +338,35 @@ bar's own padding stays modest so the bar doesn't balloon along with it. */
     flex-direction: column;
     justify-content: center;
     align-items: flex-start;
+    flex: 1 1 auto;
+    max-width: 760px;
 }
+/* Hierarchy: the eyebrow label is now the dominant line (biggest, bold,
+the gold/olive accent already used elsewhere), the farm name is the
+medium second line, the domain tags are the smallest third line - and
+the larger, wider-tracked type on line 1 is what actually carries the
+block further right toward the logo, not a layout trick. */
 #slim-header .brand-name {
-    font-size: 0.9em;
-    color: #2F6D3A;
-    letter-spacing: 3px;
-    font-weight: 700;
+    font-size: 2.1em;
+    color: #C9A227;
+    letter-spacing: 4px;
+    font-weight: 800;
     text-transform: uppercase;
-    margin-bottom: 6px;
+    line-height: 1.15;
+    margin-bottom: 10px;
 }
 #slim-header .farm-name {
-    font-size: 2em;
+    font-size: 1.5em;
     color: #1B2A4E;
-    font-weight: 800;
+    font-weight: 700;
     line-height: 1.1;
-    letter-spacing: -0.5px;
+    letter-spacing: -0.3px;
     margin-bottom: 10px;
 }
 #slim-header .domain-tags {
     display: flex;
     gap: 22px;
-    font-size: 0.98em;
+    font-size: 0.88em;
     color: #4b5563;
     font-weight: 500;
 }
