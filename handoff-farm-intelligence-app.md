@@ -69,6 +69,15 @@ between pigs and chickens") in plain language, for real, against the cloud datab
     white pills instead of one continuous panel, enlarged the header logo further
     (72px), and replaced two stat cards' misleading "0.0% vs 30 days ago" with honest
     "Since &lt;date&gt;" captions. See section 4.
+  - `55bfc45` — this doc's previous update (sidebar redesign, new pages, CSS-bug and
+    stat-card fixes).
+  - `ef0f577` → `e26ff0e` — five rounds of header/layout polish driven by direct user
+    visual feedback: logo repositioned right + resized several times, dashboard chart
+    row order swapped (financial charts lead), sidebar nav spread evenly across full
+    height, header background/accent treatment to read as one cohesive bar, and a
+    full text-hierarchy rework (eyebrow label now the dominant line). Includes one
+    real overcorrection (`154abfb`) caught and reverted the same session
+    (`c0d3de2`) - see section 4 for the full blow-by-blow and the lesson from it.
 - Throwaway branch `prototype/supabase-domain-join-test` (`447dbec`) — the SQLite
   prototype that first found the sync's feed_inventory grain issue. Deliberately not
   merged into `main` (prototypes are a primary source kept on their own branch here).
@@ -429,6 +438,41 @@ rest are genuinely new real-data pages, not placeholders):
   from real `MIN(start_date)`/`MIN(farrow_date)` queries, not hand-typed. Active
   Headcount and Mortality Rate kept their genuine percentage comparisons since those
   are real flow/snapshot metrics that actually vary period to period.
+- **Header went through five more iterations after the sidebar redesign shipped**
+  (`ef0f577` → `3b86982` → `154abfb` → `c0d3de2` → `e26ff0e`), all user-driven visual
+  feedback rounds, each verified locally at multiple viewport widths via Playwright
+  before deploying:
+  1. `ef0f577` — logo moved back to the right (112px), dashboard chart rows reordered
+     (financial charts now lead: Expenses vs Revenue + Expense Breakdown on top,
+     Headcount Trend + FCR below), sidebar nav switched to `justify-content:
+     space-evenly` + `align-self: stretch` so the 9 items spread across the full
+     available height instead of clustering at the top.
+  2. `3b86982` — fixed "two corners with a dead-space gap" on wide viewports: added a
+     horizontal gradient band (white → light green tint → white) across the header
+     plus a thin bottom accent bar, so the empty middle reads as one designed surface
+     instead of flat nothing between two isolated blocks.
+  3. `154abfb` — **an overcorrection, reverted next commit**: tried to make the logo
+     "twice as big" by jumping straight to 260px and growing the header's own padding
+     to 40px/48px to match, which grew the *whole bar*, not just the logo - reported
+     back almost immediately ("you increased the width of the header").
+  4. `c0d3de2` — corrected: logo settled at a moderate 190px (up from the original
+     130px), header padding pulled back down near its original size (30px/36px).
+     Confirmed via a PIL bounding-box check that the source logo file has zero
+     trimmable whitespace (content fills the full 1672×941 canvas edge to edge), so
+     "bigger lengthwise" necessarily means height and width grow together at the
+     source's fixed ~1.78:1 aspect ratio - there's no way to widen it independently
+     without either distorting or re-cropping the source art.
+  5. `e26ff0e` — reworked the text block's hierarchy: "FARM INTELLIGENCE PLATFORM" is
+     now the *largest, boldest, gold-accented* line (was the smallest), "Chiedza Mixed
+     Farm" is the medium navy line, the domain tags are the smallest. The block also
+     picked up `flex: 1 1 auto; max-width: 760px` - the bigger, wider-tracked line-1
+     type is what actually extends it toward the logo, not an artificial stretch of
+     short left-aligned text.
+  **Lesson for any future logo/branding resize request**: check the source image for
+  trimmable whitespace *before* promising an aspect-ratio-independent resize, and when
+  a user says "make X bigger," prefer a moderate, easily-adjustable first pass over a
+  large jump - the 154abfb→c0d3de2 round-trip cost two extra deploy cycles that a
+  smaller first move would have avoided.
 
 ## Open items — unresolved, don't assume either way
 
