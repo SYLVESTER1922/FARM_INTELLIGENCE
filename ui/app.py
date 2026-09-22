@@ -305,14 +305,15 @@ CUSTOM_CSS = """
     background: white;
     border-radius: 12px;
     border: 1px solid #e5e7eb;
-    padding: 16px 28px;
+    padding: 14px 32px;
     margin-bottom: 16px;
     display: flex;
     align-items: center;
+    justify-content: space-between;
     gap: 24px;
 }
 #slim-header img.logo {
-    height: 72px;
+    height: 112px;
     width: auto;
     object-fit: contain;
     flex-shrink: 0;
@@ -321,8 +322,8 @@ CUSTOM_CSS = """
     display: flex;
     flex-direction: column;
     justify-content: center;
-    border-left: 1px solid #e5e7eb;
-    padding-left: 20px;
+    border-right: 1px solid #e5e7eb;
+    padding-right: 24px;
 }
 #slim-header .brand-name {
     font-size: 0.72em;
@@ -337,14 +338,21 @@ CUSTOM_CSS = """
     color: #1B2A4E;
     font-weight: 700;
     line-height: 1.1;
+    margin-bottom: 6px;
+}
+#slim-header .domain-tags {
+    font-size: 0.82em;
+    color: #6b7280;
+    letter-spacing: 0.3px;
 }
 #sidebar-nav {
     background: linear-gradient(180deg, #14261A 0%, #1B3B25 100%);
     border-radius: 12px;
-    padding: 10px 0;
-    gap: 0 !important;
+    padding: 28px 0 !important;
     min-width: 200px !important;
     max-width: 200px !important;
+    align-self: stretch !important;
+    justify-content: space-evenly !important;
 }
 /* "nav-btn" is a class on the <button> itself (Gradio's elem_classes
 applies directly to the component), not a wrapper around one - an earlier
@@ -510,11 +518,12 @@ def build_interface() -> gr.Blocks:
         )
         gr.HTML(f"""
         <div id="slim-header">
-            {logo_img_html}
             <div class="brand-text">
                 <div class="brand-name">Farm Intelligence Platform</div>
                 <div class="farm-name">Chiedza Mixed Farm</div>
+                <div class="domain-tags">🐷 Piggery &nbsp; 🐔 Poultry &nbsp; 🌾 Crops</div>
             </div>
+            {logo_img_html}
         </div>
         """)
 
@@ -533,12 +542,13 @@ def build_interface() -> gr.Blocks:
                 # ---- Dashboard (landing page) ----------------------------
                 with gr.Column(visible=True) as page_dashboard:
                     dashboard_stats_html = gr.HTML()
-                    with gr.Row():
-                        herd_growth_plot = gr.Plot(label="", show_label=False)
-                        dash_fcr_plot = gr.Plot(label="", show_label=False)
+                    # Financial charts lead, operational charts follow.
                     with gr.Row():
                         cost_revenue_plot = gr.Plot(label="", show_label=False)
                         expense_breakdown_plot = gr.Plot(label="", show_label=False)
+                    with gr.Row():
+                        herd_growth_plot = gr.Plot(label="", show_label=False)
+                        dash_fcr_plot = gr.Plot(label="", show_label=False)
                 pages.append(page_dashboard)
 
                 # ---- Chat --------------------------------------------------
