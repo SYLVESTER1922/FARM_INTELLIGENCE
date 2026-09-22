@@ -55,6 +55,11 @@ chickens") in plain language, for real, against the cloud database, at
     `assets/netrisyl-logo.png`) and swapped three chart types for readability
     (Mortality/Expenses-vs-Revenue: bars → lines; Records by Domain: bar → donut) — see
     section 4.
+  - `49fdefc` — this doc's previous update (chart layout bug fixes, logo/chart-type
+    changes).
+  - `5713a62` — moved the header logo from left to right (dropped the `.hero-left`
+    wrapper so `.titles` and the logo are the hero's two direct flex children, letting
+    `justify-content:space-between` push the logo right) and enlarged it, 90px → 140px.
 - Throwaway branch `prototype/supabase-domain-join-test` (`447dbec`) — the SQLite
   prototype that first found the sync's feed_inventory grain issue. Deliberately not
   merged into `main` (prototypes are a primary source kept on their own branch here).
@@ -334,6 +339,10 @@ further, consider whether it's earned a proper spec at that point.
   questions a line reads more clearly for); Records by Domain went from a bar chart to a
   donut (a share-of-total question). FCR and Feed Cost by Domain were explicitly left as
   bars - those are precise value rankings/comparisons, where bars are still correct.
+  **Follow-up per user request**: the logo was later moved from the left side of the
+  header to the right, and enlarged (90px → 140px) - a one-line CSS/HTML change
+  (`#farm-hero`'s `justify-content: space-between` now applies directly between
+  `.titles` and the logo `<img>`, no wrapper div needed).
 
 ## Open items — unresolved, don't assume either way
 
