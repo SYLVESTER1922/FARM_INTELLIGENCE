@@ -105,16 +105,18 @@ def mortality_chart(data):
     pig_by_month = dict(zip(pig_months, pig_deaths))
     poultry_by_month = dict(zip(poultry_months, poultry_deaths))
 
+    # Line, not bars: this is a time-trend question (where does mortality
+    # spike across the year), and a line makes that spike and its shape
+    # read more clearly than grouped bars do.
     fig = go.Figure()
-    fig.add_trace(go.Bar(
+    fig.add_trace(go.Scatter(
         x=labels, y=[pig_by_month.get(m, 0) for m in labels],
-        name="Piggery", marker_color=C_GREEN))
-    fig.add_trace(go.Bar(
+        name="Piggery", mode="lines+markers", line=dict(color=C_GREEN, width=3)))
+    fig.add_trace(go.Scatter(
         x=labels, y=[poultry_by_month.get(m, 0) for m in labels],
-        name="Poultry", marker_color=C_GOLD))
+        name="Poultry", mode="lines+markers", line=dict(color=C_GOLD, width=3)))
     fig.update_layout(
         title="Mortality by Month (Deaths)",
-        barmode="group",
         yaxis=dict(title="Deaths", automargin=True),
         xaxis=_month_xaxis(labels),
         legend=BOTTOM_LEGEND,
@@ -188,16 +190,18 @@ def expenses_vs_revenue_chart(data):
     exp_by_month = {_month_label(m): float(v) for m, v in data["expenses"]}
     rev_by_month = {_month_label(m): float(v) for m, v in data["revenue"]}
 
+    # Line, not bars: this is a trajectory question (is revenue growing
+    # relative to expenses over time), which a line communicates more
+    # clearly than side-by-side bars.
     fig = go.Figure()
-    fig.add_trace(go.Bar(
+    fig.add_trace(go.Scatter(
         x=labels, y=[exp_by_month.get(m, 0) for m in labels],
-        name="Expenses", marker_color=C_RED))
-    fig.add_trace(go.Bar(
+        name="Expenses", mode="lines+markers", line=dict(color=C_RED, width=3)))
+    fig.add_trace(go.Scatter(
         x=labels, y=[rev_by_month.get(m, 0) for m in labels],
-        name="Revenue", marker_color=C_BLUE))
+        name="Revenue", mode="lines+markers", line=dict(color=C_BLUE, width=3)))
     fig.update_layout(
         title="Expenses vs Revenue by Month (USD)",
-        barmode="group",
         yaxis=dict(title="USD", automargin=True),
         xaxis=_month_xaxis(labels),
         legend=BOTTOM_LEGEND,
@@ -232,12 +236,15 @@ def data_coverage_chart(counts):
     labels = ["Piggery Batches", "Poultry Batches", "Crop Plantings"]
     values = [counts["piggery_batches"], counts["poultry_batches"], counts["plantings"]]
     colors = [C_GREEN, C_GOLD, C_BLUE]
-    fig = go.Figure(go.Bar(
-        x=labels, y=values, marker_color=colors,
-        text=values, textposition="outside", cliponaxis=False))
+    # Donut, not bars: this is a share-of-total question (how the dataset
+    # splits across domains), which a donut communicates more directly
+    # than comparing bar heights.
+    fig = go.Figure(go.Pie(
+        labels=labels, values=values, hole=0.55,
+        marker=dict(colors=colors, line=dict(color="white", width=2)),
+        textinfo="label+value", textposition="outside", automargin=True))
     fig.update_layout(
         title="Records by Domain",
-        yaxis=dict(title="Count", automargin=True, range=[0, max(values) * 1.25]),
-        xaxis=dict(automargin=True),
-        **_layout(margin=dict(l=60, r=30, t=60, b=50)))
+        showlegend=False,
+        **_layout(margin=dict(l=40, r=40, t=60, b=40)))
     return fig

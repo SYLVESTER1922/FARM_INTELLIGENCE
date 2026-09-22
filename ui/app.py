@@ -11,6 +11,7 @@ Plotly-in-gr.Plot) follows the Lobels Stores Intelligence reference app
 branding and farm data - not copied verbatim.
 """
 
+import base64
 import os
 
 import gradio as gr
@@ -21,6 +22,21 @@ from ui import charts, queries
 
 FARM_CODE = "NIS-001"  # single real farm today; multi-farm UI is deferred
 GENERIC_ERROR_MESSAGE = "Something went wrong - please try again."
+
+_LOGO_PATH = os.path.join(os.path.dirname(__file__), "..", "assets", "netrisyl-logo.png")
+
+
+def _logo_data_uri() -> str:
+    """Base64-embedded inline, not a linked external file - so the logo
+    always renders regardless of hosting/static-file setup, the same
+    pattern used by the Savanna QSR app. Returns "" if the asset is
+    missing, so a missing logo degrades to no image rather than a broken
+    page."""
+    if not os.path.exists(_LOGO_PATH):
+        return ""
+    with open(_LOGO_PATH, "rb") as f:
+        encoded = base64.b64encode(f.read()).decode("ascii")
+    return f"data:image/png;base64,{encoded}"
 
 
 # ---------------------------------------------------------------------------
@@ -182,6 +198,21 @@ CUSTOM_CSS = """
     height: 4px;
     background: linear-gradient(90deg, #C9A227 0%, #E4CC8E 50%, #C9A227 100%);
 }
+#farm-hero .hero-left {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+}
+#farm-hero img.logo {
+    height: 90px;
+    width: auto;
+    background: white;
+    border-radius: 10px;
+    padding: 8px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.18);
+    flex-shrink: 0;
+    object-fit: contain;
+}
 #farm-hero .titles h1 {
     font-size: 1.8em !important;
     font-weight: 700 !important;
@@ -264,12 +295,20 @@ def build_interface() -> gr.Blocks:
     # cramped/overlapping chart layout (narrow ~490px container even at a
     # 1400px viewport width).
     with gr.Blocks(title="Farm Intelligence", fill_width=True) as demo:
-        gr.HTML("""
+        logo_data_uri = _logo_data_uri()
+        logo_img_html = (
+            f'<img class="logo" src="{logo_data_uri}" alt="Netrisyl Insights"/>'
+            if logo_data_uri else ""
+        )
+        gr.HTML(f"""
         <div id="farm-hero">
-            <div class="titles">
-                <div class="brand-name">Farm Intelligence Platform</div>
-                <h1>Chiedza Mixed Farm</h1>
-                <p class="tagline">Piggery &middot; Poultry &middot; Crops &middot; Real-time farm data</p>
+            <div class="hero-left">
+                {logo_img_html}
+                <div class="titles">
+                    <div class="brand-name">Farm Intelligence Platform</div>
+                    <h1>Chiedza Mixed Farm</h1>
+                    <p class="tagline">Piggery &middot; Poultry &middot; Crops &middot; Real-time farm data</p>
+                </div>
             </div>
         </div>
         """)
