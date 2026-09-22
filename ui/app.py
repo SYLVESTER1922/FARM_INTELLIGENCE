@@ -305,12 +305,12 @@ CUSTOM_CSS = """
     background: linear-gradient(90deg, #ffffff 0%, #eaf2ec 50%, #ffffff 100%);
     border-radius: 12px;
     border: 1px solid #e5e7eb;
-    padding: 40px 48px;
+    padding: 30px 36px;
     margin-bottom: 16px;
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 32px;
+    gap: 28px;
     position: relative;
     overflow: hidden;
 }
@@ -324,8 +324,11 @@ the original full-height hero header used. */
     height: 3px;
     background: linear-gradient(90deg, #2F6D3A 0%, #C9A227 50%, #2F6D3A 100%);
 }
+/* Only the logo itself gets bigger here (lengthwise, via height with the
+source image's fixed ~1.78:1 aspect ratio auto-widening it) - the header
+bar's own padding stays modest so the bar doesn't balloon along with it. */
 #slim-header img.logo {
-    height: 260px;
+    height: 190px;
     width: auto;
     object-fit: contain;
     flex-shrink: 0;
@@ -333,28 +336,29 @@ the original full-height hero header used. */
 #slim-header .brand-text {
     display: flex;
     flex-direction: column;
-    justify-content: space-between;
-    align-self: stretch;
-    padding: 6px 0;
+    justify-content: center;
+    align-items: flex-start;
 }
 #slim-header .brand-name {
-    font-size: 1.1em;
+    font-size: 0.9em;
     color: #2F6D3A;
-    letter-spacing: 3.5px;
+    letter-spacing: 3px;
     font-weight: 700;
     text-transform: uppercase;
+    margin-bottom: 6px;
 }
 #slim-header .farm-name {
-    font-size: 3em;
+    font-size: 2em;
     color: #1B2A4E;
     font-weight: 800;
     line-height: 1.1;
     letter-spacing: -0.5px;
+    margin-bottom: 10px;
 }
 #slim-header .domain-tags {
     display: flex;
-    gap: 28px;
-    font-size: 1.15em;
+    gap: 22px;
+    font-size: 0.98em;
     color: #4b5563;
     font-weight: 500;
 }
