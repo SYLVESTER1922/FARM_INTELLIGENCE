@@ -198,17 +198,12 @@ CUSTOM_CSS = """
     height: 4px;
     background: linear-gradient(90deg, #C9A227 0%, #E4CC8E 50%, #C9A227 100%);
 }
-#farm-hero .hero-left {
-    display: flex;
-    align-items: center;
-    gap: 20px;
-}
 #farm-hero img.logo {
-    height: 90px;
+    height: 140px;
     width: auto;
     background: white;
     border-radius: 10px;
-    padding: 8px;
+    padding: 10px;
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.18);
     flex-shrink: 0;
     object-fit: contain;
@@ -302,14 +297,12 @@ def build_interface() -> gr.Blocks:
         )
         gr.HTML(f"""
         <div id="farm-hero">
-            <div class="hero-left">
-                {logo_img_html}
-                <div class="titles">
-                    <div class="brand-name">Farm Intelligence Platform</div>
-                    <h1>Chiedza Mixed Farm</h1>
-                    <p class="tagline">Piggery &middot; Poultry &middot; Crops &middot; Real-time farm data</p>
-                </div>
+            <div class="titles">
+                <div class="brand-name">Farm Intelligence Platform</div>
+                <h1>Chiedza Mixed Farm</h1>
+                <p class="tagline">Piggery &middot; Poultry &middot; Crops &middot; Real-time farm data</p>
             </div>
+            {logo_img_html}
         </div>
         """)
 
