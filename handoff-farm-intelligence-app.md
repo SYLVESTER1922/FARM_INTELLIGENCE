@@ -42,6 +42,19 @@ chickens") in plain language, for real, against the cloud database, at
     JCC pause tradeoff (see Open Items).
   - `1e6dbf2` — added the dashboard: Herd & Flock, Financials, Findings & Alerts, Data
     Coverage tabs (see section 4 below).
+  - `27af680` — this doc's previous update (dashboard section, Render history, mid-flight
+    grilling session note).
+  - `3a47315` — fixed dashboard chart layout bugs: `gr.Blocks(fill_width=True)` +
+    explicit CSS `width:100%` (the app was shrink-wrapped to ~490px even at a 1400px
+    viewport - root cause of the legend/title overlap and cramped axis labels reported
+    against the live site), legends moved below plots, date-axis labels thinned/rotated,
+    `automargin`/`cliponaxis` fixes for clipped text, and a real bug caught via
+    screenshot review (not user-reported): `headcount_chart`'s x-axis category order was
+    scrambled because Plotly orders categories by first-appearance-per-trace.
+  - `5b06284` — added the Netrisyl logo to the header (inline base64,
+    `assets/netrisyl-logo.png`) and swapped three chart types for readability
+    (Mortality/Expenses-vs-Revenue: bars → lines; Records by Domain: bar → donut) — see
+    section 4.
 - Throwaway branch `prototype/supabase-domain-join-test` (`447dbec`) — the SQLite
   prototype that first found the sync's feed_inventory grain issue. Deliberately not
   merged into `main` (prototypes are a primary source kept on their own branch here).
@@ -289,6 +302,38 @@ further, consider whether it's earned a proper spec at that point.
   app, callable directly by URL, same as `/_chat_fn` already was. Consistent with the
   app's existing public/no-auth posture (synthetic demo data), but worth knowing this is
   now four endpoints of surface area, not one.
+- **Real layout bug, found after initial ship, now fixed**: the user reported legend/
+  title overlap, cramped x-axis labels, and a clipped FCR chart on the live deployment.
+  Root cause turned out to be architectural, not per-chart: `gr.Blocks()` defaults to
+  `fill_width=False` in Gradio 6, so the *entire app* was shrink-wrapped to ~490px even
+  at a 1400px viewport - explaining all three symptoms at once. Fixed with
+  `fill_width=True` **plus** an explicit CSS `width: 100% !important` on
+  `.gradio-container` (the `fill_width` flag alone added the right class but the
+  computed width didn't actually change - needed the direct override too; this is worth
+  knowing if a future Gradio upgrade reintroduces a similar shrink-wrap issue). On top of
+  that, per-chart Plotly fixes: legends moved below the plot (were overlapping the title
+  at `y=1.15`), date-axis labels thinned to ~6 evenly-spaced rotated ticks,
+  `automargin=True` on every axis, `cliponaxis=False` + range padding for outside-bar
+  text. **A second real bug was caught during screenshot review, not reported by the
+  user**: `headcount_chart`'s x-axis rendered "Oct 2025" after "Aug 2026" because Plotly
+  orders categories by first-appearance-per-trace, and the piggery/poultry lines cover
+  different date ranges - fixed with explicit `categoryorder="array"` pinned to the full
+  chronological label list. **Verification method going forward**: Playwright (with a
+  headless Chromium binary) was installed into the project venv specifically to take
+  real screenshots of the deployed app - not just "the code runs" or "the API returns
+  data." This is a dev-only tool (screenshot verification), not a production dependency,
+  and isn't in `requirements.txt`.
+- **Visual polish pass**: the Netrisyl Insights logo now appears in the header, embedded
+  inline as base64 (`assets/netrisyl-logo.png`, resized from a 1.2MB/1672×941 source the
+  user dropped at the repo root - `NI_logo.png`, intentionally left untracked/uncommitted
+  since it's not what's actually used - down to a 130KB/533×300 web copy) rather than
+  linked externally, so it always renders regardless of static-file hosting - same
+  pattern as the Savanna QSR app. Also, three chart types were swapped for readability,
+  a data-driven choice per explicit instruction, not aesthetic: Mortality by Month and
+  Expenses vs Revenue by Month went from grouped bars to lines (both are time-trend
+  questions a line reads more clearly for); Records by Domain went from a bar chart to a
+  donut (a share-of-total question). FCR and Feed Cost by Domain were explicitly left as
+  bars - those are precise value rankings/comparisons, where bars are still correct.
 
 ## Open items — unresolved, don't assume either way
 
