@@ -72,13 +72,19 @@ def _dashboard_conn():
 
 
 def _stat_card_html(card):
-    pct = card["pct_change"]
-    if pct is None:
-        change_html = '<span class="stat-change stat-flat">— no prior-period baseline</span>'
+    # A cumulative/lifetime total (e.g. Piglets Born) has no meaningful
+    # "vs 30 days ago" percentage - it carries a neutral "caption" instead
+    # of "pct_change", rendered without an up/down arrow.
+    if "caption" in card:
+        change_html = f'<span class="stat-change stat-flat">{card["caption"]}</span>'
     else:
-        cls = "stat-up" if pct >= 0 else "stat-down"
-        arrow = "▲" if pct >= 0 else "▼"
-        change_html = f'<span class="stat-change {cls}">{arrow} {abs(pct)}% vs 30 days ago</span>'
+        pct = card["pct_change"]
+        if pct is None:
+            change_html = '<span class="stat-change stat-flat">— no prior-period baseline</span>'
+        else:
+            cls = "stat-up" if pct >= 0 else "stat-down"
+            arrow = "▲" if pct >= 0 else "▼"
+            change_html = f'<span class="stat-change {cls}">{arrow} {abs(pct)}% vs 30 days ago</span>'
     return (
         f'<div class="stat-card">'
         f'<div class="stat-icon">{card["icon"]}</div>'
@@ -299,58 +305,73 @@ CUSTOM_CSS = """
     background: white;
     border-radius: 12px;
     border: 1px solid #e5e7eb;
-    padding: 10px 20px;
-    margin-bottom: 14px;
+    padding: 16px 28px;
+    margin-bottom: 16px;
     display: flex;
     align-items: center;
-    gap: 14px;
+    gap: 24px;
 }
 #slim-header img.logo {
-    height: 44px;
+    height: 72px;
     width: auto;
     object-fit: contain;
     flex-shrink: 0;
 }
+#slim-header .brand-text {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    border-left: 1px solid #e5e7eb;
+    padding-left: 20px;
+}
 #slim-header .brand-name {
-    font-size: 0.68em;
+    font-size: 0.72em;
     color: #2F6D3A;
-    letter-spacing: 2px;
+    letter-spacing: 2.5px;
     font-weight: 700;
     text-transform: uppercase;
-    margin-bottom: 2px;
+    margin-bottom: 4px;
 }
 #slim-header .farm-name {
-    font-size: 1.05em;
+    font-size: 1.25em;
     color: #1B2A4E;
     font-weight: 700;
+    line-height: 1.1;
 }
 #sidebar-nav {
     background: linear-gradient(180deg, #14261A 0%, #1B3B25 100%);
     border-radius: 12px;
-    padding: 14px 0;
+    padding: 10px 0;
+    gap: 0 !important;
     min-width: 200px !important;
     max-width: 200px !important;
 }
-.nav-btn button {
+/* "nav-btn" is a class on the <button> itself (Gradio's elem_classes
+applies directly to the component), not a wrapper around one - an earlier
+".nav-btn button" descendant-selector version of this never matched, which
+is why each button kept Gradio's default white/boxed styling and the
+column's default flex gap read as dark gaps between white pills. */
+button.nav-btn {
     background: transparent !important;
     color: #cfe0d3 !important;
     border: none !important;
     box-shadow: none !important;
     text-align: left !important;
     justify-content: flex-start !important;
-    padding: 11px 20px !important;
+    padding: 13px 22px !important;
     font-size: 0.92em !important;
     font-weight: 500 !important;
     border-radius: 0 !important;
     border-left: 3px solid transparent !important;
     width: 100% !important;
+    margin: 0 !important;
 }
-.nav-btn button:hover {
-    background: rgba(255, 255, 255, 0.07) !important;
+button.nav-btn:hover {
+    background: rgba(255, 255, 255, 0.08) !important;
     color: white !important;
 }
-.nav-btn-active button {
-    background: rgba(201, 162, 39, 0.16) !important;
+button.nav-btn-active {
+    background: rgba(201, 162, 39, 0.18) !important;
     color: white !important;
     border-left: 3px solid #C9A227 !important;
     font-weight: 700 !important;
@@ -490,7 +511,7 @@ def build_interface() -> gr.Blocks:
         gr.HTML(f"""
         <div id="slim-header">
             {logo_img_html}
-            <div>
+            <div class="brand-text">
                 <div class="brand-name">Farm Intelligence Platform</div>
                 <div class="farm-name">Chiedza Mixed Farm</div>
             </div>

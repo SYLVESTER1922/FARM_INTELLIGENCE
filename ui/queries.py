@@ -279,6 +279,17 @@ TOTAL_BORN_ASOF_SQL = """
     WHERE farrow_date IS NOT NULL AND farrow_date <= %(cutoff)s
 """
 
+EARLIEST_PLACEMENT_SQL = """
+    SELECT LEAST(
+        (SELECT MIN(start_date) FROM pig_batches),
+        (SELECT MIN(placement_date) FROM poultry_batches)
+    ) AS total
+"""
+
+EARLIEST_FARROW_SQL = """
+    SELECT MIN(farrow_date) AS total FROM breeding_farrowing WHERE farrow_date IS NOT NULL
+"""
+
 DEATHS_IN_WINDOW_SQL = """
     SELECT COALESCE(SUM(deaths), 0) AS total
     FROM {table} WHERE date > %(start)s AND date <= %(end)s
@@ -316,10 +327,16 @@ def _sum(pair):
 
 
 def fetch_dashboard_stats(conn):
-    """Four headline stat cards, each as a (value as-of the latest real
-    data date) vs (the same computation as-of 30 days earlier) comparison -
-    entirely derived from real timestamped rows, never a fabricated
-    baseline. Returns a list of dicts: label, icon, value, unit, pct_change."""
+    """Four headline stat cards. Active Headcount and Mortality Rate are
+    genuine flow/snapshot metrics, so they get a real (value as-of the
+    latest real data date) vs (as-of 30 days earlier) percentage. Total
+    Livestock Placed and Piglets Born are lifetime cumulative totals -
+    a "vs 30 days ago" percentage on a cumulative count is misleading
+    (it reads as ~0% on almost every real day, even though the total
+    itself is large and meaningful), so those two instead get a neutral
+    "Since <earliest real date>" caption and no percentage at all.
+    Returns a list of dicts: label, icon, value, and either pct_change
+    (a number or None) or caption (a string) - never both."""
     ref_date = _latest_date(conn)
     prior_date = ref_date - datetime.timedelta(days=30)
     window_start = ref_date - datetime.timedelta(days=30)
@@ -327,8 +344,7 @@ def fetch_dashboard_stats(conn):
 
     total_now = (_scalar(conn, TOTAL_PLACED_ASOF_SQL, {"cutoff": ref_date}) +
                  _scalar(conn, TOTAL_CHICKS_ASOF_SQL, {"cutoff": ref_date}))
-    total_prior = (_scalar(conn, TOTAL_PLACED_ASOF_SQL, {"cutoff": prior_date}) +
-                   _scalar(conn, TOTAL_CHICKS_ASOF_SQL, {"cutoff": prior_date}))
+    earliest_placement = _scalar(conn, EARLIEST_PLACEMENT_SQL, {})
 
     active_pig_now, active_poultry_now = _active_headcount_asof(conn, ref_date)
     active_pig_prior, active_poultry_prior = _active_headcount_asof(conn, prior_date)
@@ -336,7 +352,7 @@ def fetch_dashboard_stats(conn):
     active_prior = active_pig_prior + active_poultry_prior
 
     born_now = _scalar(conn, TOTAL_BORN_ASOF_SQL, {"cutoff": ref_date})
-    born_prior = _scalar(conn, TOTAL_BORN_ASOF_SQL, {"cutoff": prior_date})
+    earliest_farrow = _scalar(conn, EARLIEST_FARROW_SQL, {})
 
     deaths_window = (
         _scalar(conn, DEATHS_IN_WINDOW_SQL.format(table="pig_daily_log"),
@@ -359,11 +375,11 @@ def fetch_dashboard_stats(conn):
 
     return [
         {"label": "Total Livestock Placed", "icon": "🐖", "value": f"{total_now:,}",
-         "pct_change": _pct_change(total_now, total_prior)},
+         "caption": f"Since {earliest_placement}"},
         {"label": "Active Headcount", "icon": "✅", "value": f"{active_now:,}",
          "pct_change": _pct_change(active_now, active_prior)},
         {"label": "Piglets Born (cumulative)", "icon": "🐷", "value": f"{born_now:,}",
-         "pct_change": _pct_change(born_now, born_prior)},
+         "caption": f"Since {earliest_farrow}" if earliest_farrow else "No litters recorded yet"},
         {"label": "Mortality Rate (30 days)", "icon": "⚠️", "value": f"{mortality_rate}%",
          "pct_change": _pct_change(mortality_rate, mortality_rate_prior)},
     ]
