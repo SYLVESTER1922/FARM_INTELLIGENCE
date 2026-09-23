@@ -14,6 +14,16 @@ class SyncReport:
 
 def sync_workbook_to_supabase(filepath: str, farm_code: str, dsn: str) -> SyncReport:
     wb = openpyxl.load_workbook(filepath, data_only=True)
+    return _sync_from_workbook(wb, farm_code, dsn)
+
+
+def _sync_from_workbook(wb, farm_code: str, dsn: str) -> SyncReport:
+    """The actual sync logic, decoupled from *how* `wb` was loaded - an
+    openpyxl Workbook (sync_workbook_to_supabase, above) or a
+    sync.sheets_io.SheetsWorkbook (sync_sheet_to_supabase, below) both
+    satisfy the same minimal interface (`.sheetnames`, `wb[name]` returning
+    something read_tab_rows/read_list_values can read), so every _sync_*
+    function below runs unchanged against either source."""
     conn = psycopg.connect(dsn, autocommit=True)
     report = SyncReport()
 
@@ -78,6 +88,15 @@ def sync_workbook_to_supabase(filepath: str, farm_code: str, dsn: str) -> SyncRe
 
     conn.close()
     return report
+
+
+def sync_sheet_to_supabase(sheet_id: str, farm_code: str, dsn: str, creds_path: str) -> SyncReport:
+    """Same sync, sourced from the live Google Sheet instead of the .xlsx
+    workbook. See sync/sheets_io.py for how a Sheet is made to look like an
+    openpyxl Workbook to the _sync_* functions below."""
+    from sync.sheets_io import load_sheets_workbook
+    wb = load_sheets_workbook(sheet_id, creds_path)
+    return _sync_from_workbook(wb, farm_code, dsn)
 
 
 PIG_BATCH_DROPDOWN_FIELDS = {
