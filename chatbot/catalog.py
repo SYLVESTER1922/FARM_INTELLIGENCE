@@ -37,6 +37,38 @@ def date_filter_sql(column, date_from, date_to, params, param_prefix=""):
     return (" AND " + " AND ".join(clauses)) if clauses else ""
 
 
+ACTIVE_HEADCOUNT_ASOF_SQL = """
+    WITH batch_range AS (
+        SELECT batch_code, MIN(date) AS first_date, MAX(date) AS last_date
+        FROM {table} GROUP BY batch_code
+    ),
+    active_batches AS (
+        SELECT batch_code FROM batch_range
+        WHERE first_date <= %(cutoff)s AND last_date >= %(cutoff)s
+    ),
+    latest_count AS (
+        SELECT DISTINCT ON (batch_code) batch_code, {count_col} AS headcount
+        FROM {table} WHERE date <= %(cutoff)s
+        ORDER BY batch_code, date DESC
+    )
+    SELECT COALESCE(SUM(lc.headcount), 0) AS total
+    FROM active_batches ab JOIN latest_count lc ON lc.batch_code = ab.batch_code
+"""
+
+
+def active_headcount_asof(conn, cutoff, table, count_col):
+    """A batch is "active as of `cutoff`" if it has daily-log rows both
+    on/before and on/after that date - there's no historical status log,
+    so today's status column can't honestly answer "was this batch active
+    on a past date" (see spec-chatbot-ui.md's dashboard methodology note).
+    Shared by the dashboard's Active Headcount stat card (ui/queries.py)
+    and the chatbot's tier-3 headcount tool (chatbot/tools.py) - lives
+    here, not in ui/queries.py, so chatbot never has to depend on ui to
+    reuse it, mirroring date_filter_sql's placement above."""
+    sql = ACTIVE_HEADCOUNT_ASOF_SQL.format(table=table, count_col=count_col)
+    return conn.execute(sql, {"cutoff": cutoff}).fetchone()[0]
+
+
 FEED_COST_SPLIT_SQL = """
     WITH domain_usage AS (
         SELECT date, 'piggery' AS domain, feed_type, feed_kg FROM pig_daily_log

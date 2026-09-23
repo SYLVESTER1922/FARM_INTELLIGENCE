@@ -111,6 +111,10 @@ def test_answer_question_returns_missing_parameter_when_no_month_given(tmp_path,
     assert answer.intent_source == "unresolved"
     assert answer.failure_reason == "missing_parameter"
     assert answer.query_id is None
+    # a targeted clarifying question, not the generic unresolved wording -
+    # tier-1 already knew *which* query type this was, just not the month
+    assert answer.text != "I can't answer that yet - I don't have a way to look that up."
+    assert "month" in answer.text.lower()
 
 
 def test_answer_question_logs_query_log_row_for_success(tmp_path, db_conn, test_dsn):

@@ -20,6 +20,7 @@ from chatbot.catalog import (
     PIGGERY_DISEASE_OUTBREAK_SQL,
     POULTRY_MORTALITY_SPIKE_DATE_COLUMN,
     POULTRY_MORTALITY_SPIKE_SQL,
+    active_headcount_asof,
     date_filter_sql,
 )
 
@@ -294,24 +295,6 @@ TOTAL_CHICKS_ASOF_SQL = """
     FROM poultry_batches WHERE placement_date <= %(cutoff)s
 """
 
-ACTIVE_HEADCOUNT_ASOF_SQL = """
-    WITH batch_range AS (
-        SELECT batch_code, MIN(date) AS first_date, MAX(date) AS last_date
-        FROM {table} GROUP BY batch_code
-    ),
-    active_batches AS (
-        SELECT batch_code FROM batch_range
-        WHERE first_date <= %(cutoff)s AND last_date >= %(cutoff)s
-    ),
-    latest_count AS (
-        SELECT DISTINCT ON (batch_code) batch_code, {count_col} AS headcount
-        FROM {table} WHERE date <= %(cutoff)s
-        ORDER BY batch_code, date DESC
-    )
-    SELECT COALESCE(SUM(lc.headcount), 0) AS total
-    FROM active_batches ab JOIN latest_count lc ON lc.batch_code = ab.batch_code
-"""
-
 TOTAL_BORN_ASOF_SQL = """
     SELECT COALESCE(SUM(born_alive), 0) AS total
     FROM breeding_farrowing
@@ -345,10 +328,8 @@ def _scalar(conn, sql, params):
 
 
 def _active_headcount_asof(conn, cutoff):
-    pig = _scalar(conn, ACTIVE_HEADCOUNT_ASOF_SQL.format(
-        table="pig_daily_log", count_col="closing_count"), {"cutoff": cutoff})
-    poultry = _scalar(conn, ACTIVE_HEADCOUNT_ASOF_SQL.format(
-        table="poultry_daily_log", count_col="closing_birds"), {"cutoff": cutoff})
+    pig = active_headcount_asof(conn, cutoff, "pig_daily_log", "closing_count")
+    poultry = active_headcount_asof(conn, cutoff, "poultry_daily_log", "closing_birds")
     return pig, poultry
 
 
