@@ -9,6 +9,12 @@ that answers the project's original motivating question ("how does feed cost spl
 between pigs and chickens") in plain language, for real, against the cloud database, at
 `https://netrisyl-farm-intelligence.onrender.com`.
 
+**Most recent phase**: the data source went fully live. A real Google Sheet now feeds
+Supabase on a lazy poll-on-request cycle (no more manual `.xlsx` re-sync), and a global
+date-range filter reaches every dashboard page and the chat's inject-and-narrate queries
+— both modeled on the sibling Savanna QSR Intelligence product's actual architecture
+(read directly from its repo, not assumed). See section 5.
+
 ## Repo state
 
 - Working dir: `/Users/vharsh/Farm-Intelligence-App` — git repo.
@@ -78,6 +84,17 @@ between pigs and chickens") in plain language, for real, against the cloud datab
     full text-hierarchy rework (eyebrow label now the dominant line). Includes one
     real overcorrection (`154abfb`) caught and reverted the same session
     (`c0d3de2`) - see section 4 for the full blow-by-blow and the lesson from it.
+  - `3e74c9b` — this doc's previous update (five rounds of header/layout polish).
+  - `568fe93` — **Phase 1 of the live-data architecture**: added live Google Sheets
+    ingestion (`sync_sheet_to_supabase`), a service-account-authenticated read of a real
+    Google Sheet adapted through `sync/sheets_io.py` to satisfy `sync/engine.py`'s
+    existing per-table sync functions unchanged. Verified end-to-end against local
+    Postgres and real Supabase before being wired into the app. See section 5.
+  - `0eb125a` — **Phase 2**: added global date-range filtering across every dashboard
+    page and the chat's inject-and-narrate queries, consolidated the app's nine
+    `demo.load()` calls into one `load_all()` orchestrator, and fixed a real bug this
+    surfaced (`prepare_threshold=None`, see section 5) that was silently breaking
+    Sheets syncs against Supabase's pooled connection.
 - Throwaway branch `prototype/supabase-domain-join-test` (`447dbec`) — the SQLite
   prototype that first found the sync's feed_inventory grain issue. Deliberately not
   merged into `main` (prototypes are a primary source kept on their own branch here).
@@ -474,6 +491,128 @@ rest are genuinely new real-data pages, not placeholders):
   large jump - the 154abfb→c0d3de2 round-trip cost two extra deploy cycles that a
   smaller first move would have avoided.
 
+### 5. Live data architecture: Google Sheets sync + date-range filtering
+
+Built by explicit user request to make the dashboard's data source live, reusing the
+same "Supabase backing store + inject-and-narrate" architecture as sibling product
+Savanna QSR Intelligence (`github.com/SYLVESTER1922/savvana-qsr-intelligence`) — checked
+directly against that repo's actual code before designing anything, not assumed. Two
+premises from the initial request turned out false and were corrected via a `/grill-me`
+session before implementation: Savanna has **no** Google Sheets sync code at all (its
+Supabase population happens entirely outside that repo), and its "live" read layer is
+just a 5-minute in-process TTL cache over Supabase's REST API plus a manual refresh
+button — simpler than what this project already had. What *did* carry over faithfully:
+Savanna's `date_from`/`date_to` + "Apply Filter" pattern, and its query-first-narrate-
+second split (there via OpenAI tool-calling; here via the existing tier-1/tier-2
+`chatbot/` engine, deliberately kept rather than rewritten — two different mechanisms
+upholding the same principle).
+
+**Phase 1 — live Google Sheets ingestion** (`568fe93`):
+
+- `sync/sheets_io.py`: a minimal adapter making a Google Sheet satisfy the exact minimal
+  interface `sync/engine.py`'s 21 `_sync_*` functions already expect from an openpyxl
+  `Workbook` (`.sheetnames`, `wb[name][row]`, `.iter_rows(...)`) — so all ~1,384 lines of
+  already-tested per-table sync logic run completely unchanged against either source.
+  Reads via `sheets.values().batchGet(..., valueRenderOption="UNFORMATTED_VALUE")` (native
+  types, not formatted strings — dates come back as serial day-counts, converted manually
+  from the `1899-12-30` Sheets epoch, since formatted-string dates are locale-ambiguous).
+  Blank cells convert to `None`, not `""` (openpyxl's real behavior) — Postgres rejects
+  `""` for `NUMERIC` columns, and this was caught by a real sync failure before shipping.
+- `sync/engine.py` gained `sync_sheet_to_supabase(sheet_id, farm_code, dsn, creds_json)`,
+  extracted the shared logic into `_sync_from_workbook(wb, farm_code, dsn)` so both the
+  `.xlsx` and Sheets paths call the identical per-table functions.
+- **New live Google Sheet**: "Netrisyl Farm Intelligence-Live", ID
+  `1bmjuyGFpqc9qaXf7s-jqVtBxIamE_XcBGb9qGUAjgXE`, owned by the user's own Google account,
+  shared as Editor with service account
+  `farm-intelligence-sync@netrisyl-farm-intelligence.iam.gserviceaccount.com`. Same 21
+  domain tabs as the original workbook plus `99_LISTS`, seeded from real current Supabase
+  data, with a simplified convention (row 1 = headers matching Postgres column names
+  exactly, row 2+ = data — no purpose-note/sample rows like the original workbook).
+- **Credentials**: the service account key lives at
+  `~/.config/farm-intelligence/google-service-account.json` locally (never printed,
+  verified only by structural checks — `client_email`, `type`, presence of
+  `private_key`). On Render, passed as the key's raw JSON *content* via the
+  `GOOGLE_SERVICE_ACCOUNT_JSON` env var (not a file path — Render's filesystem isn't
+  persistent), read with `service_account.Credentials.from_service_account_info(...)`.
+  `FARM_INTELLIGENCE_SHEET_ID` is also an env var (not secret, kept consistent with the
+  other config). Both are set on the Render service already.
+
+**Phase 2 — global date-range filtering** (`0eb125a`):
+
+- A shared `date_filter_sql(column, date_from, date_to, params, param_prefix="")` helper
+  lives in `chatbot/catalog.py`, not `ui/queries.py` — `chatbot` must never depend on
+  `ui`, and `ui/queries.py` already imports SQL constants from `chatbot/catalog.py`, so
+  this follows the same existing dependency direction. Returns a SQL fragment (or `""`)
+  filled into a `{date_filter}` formatting placeholder on every filterable query string.
+- Every `ui/queries.py` `fetch_*` function and `chatbot/engine.py`'s `answer_question`
+  gained optional `date_from=None, date_to=None` parameters — default `None` preserves
+  all pre-existing behavior and all 71 tests unchanged. `answer_question`'s catalog
+  execution step now looks up which column each catalog entry's date filter applies to
+  (`CATALOG_DATE_COLUMNS`, keyed by `query_id`) and folds the filter into the SQL before
+  running it — same inject-and-narrate order as always, the LLM never sees raw rows.
+- **`ui/app.py`**: a filter bar (From/To `Textbox` + "Apply Filter" + "🔄 Refresh Data" +
+  a live sync-status caption) sits above the sidebar, visible on every page. The nine
+  previously-separate `demo.load()` calls were consolidated into one `load_all()`
+  orchestrator (wired to initial page load, Apply Filter, and — via
+  `refresh_and_load_all()`, which force-syncs first — the Refresh button), so one click
+  updates every page at once. Chat's `additional_inputs=[date_from_box, date_to_box]`
+  means chat questions are always scoped to whatever range is currently selected — a
+  date named in the question text (e.g. "in March") narrows *within* that range, per the
+  Savanna-matched design, it doesn't override it.
+- **Lazy sync, not a background poller**: `_maybe_sync_sheets()` checks a module-level
+  `last_synced_at` timestamp on every dashboard connection and re-syncs at most once per
+  `SHEETS_SYNC_TTL_SECONDS` (300s); Refresh Data bypasses the TTL via
+  `force_sync_sheets()`. Deliberately not a real background scheduler — Render's free
+  tier can cold-start between requests, which would silently kill an in-process poller
+  with no visibility that it died.
+- **Dashboard stat-card semantics under a filter** (settled via grilling): cumulative
+  lifetime totals (Total Livestock Placed, Piglets Born) use the filter's end date (or
+  the latest real date) as an "as of" cutoff and gain a `"(through <date>)"` caption
+  suffix — never a fabricated percentage. Flow/snapshot metrics (Active Headcount,
+  Mortality Rate) use the selected range itself as the comparison window, against a
+  same-length immediately-prior period, when both bounds are set; otherwise they fall
+  back to the original fixed 30-day window.
+- **Findings & Alerts respects the filter honestly**: a finding whose underlying event
+  falls outside the selected range comes back `None`, and `ui/app.py`'s fallback text
+  distinguishes "never happened" (no filter) from "didn't happen in this range" (filter
+  active) rather than using one generic message for both.
+- **A real bug found and fixed, not present before this phase's live-sync work**:
+  Supabase's DSN is the **transaction pooler** (pgbouncer, port 6543), which is
+  incompatible with psycopg3's default server-side prepared statements — a connection
+  that runs enough repeated queries can get routed to a different backend mid-session,
+  and a statement prepared on the old backend surfaces as a real
+  `prepared statement "_pg3_N" does not exist` error. First caught live, mid-verification,
+  not in a test. Fixed with `prepare_threshold=None` on all three `psycopg.connect` call
+  sites that use this DSN (`sync/engine.py`, `ui/app.py`, `chatbot/engine.py`) — the
+  documented fix for psycopg3 against pgbouncer transaction-mode pooling.
+- `requirements.txt` gained `google-auth`, `google-api-python-client` (Phase 1) and
+  `openpyxl` (Phase 2 — `ui/app.py` now imports `sync/engine.py`, which imports
+  `openpyxl` at module level even though only the Sheets path is actually called from
+  the app; this was missing from `requirements.txt` until caught during Phase 2
+  deployment verification).
+- **Verification, matching this project's "real proof, not assumption" discipline
+  throughout**: local test-DB sync, then real-Supabase sync, both with zero errors and
+  exact value-level correctness (all three planted findings, boolean conversions, real
+  dates). The full assembled app was run locally and exercised through its real Gradio
+  HTTP API via `gradio_client` — unfiltered dashboard stats, a date range that correctly
+  excluded the piggery disease outbreak finding (all its real treatments fall in
+  April–May 2026) and a range that correctly included it, and chat correctly answering
+  "no" vs. "yes" to "is there a disease outbreak in the piggery" depending on which range
+  was active. The same checks were then repeated **against the live Render URL** after
+  redeploying, not assumed from "the deploy succeeded" — including a real live Sheets
+  sync completing successfully in production.
+- **Deploy note worth knowing for next time**: this service's `autoDeploy` setting is
+  `yes` and tracks `main`, but the push to `main` did **not** trigger a deploy on its
+  own (checked via the Render API: no deploy existed for the new commit after 8+
+  minutes). Had to trigger it manually via `POST /v1/services/{id}/deploys`. Cause not
+  diagnosed — possibly a webhook delivery issue on GitHub's or Render's side. Worth
+  checking the Render dashboard's deploy history after any future push, rather than
+  assuming auto-deploy fired.
+- **New public API surface**: `/load_all` and `/refresh_and_load_all` are now public
+  Gradio endpoints on the deployed app (in addition to the per-page `/load_*` endpoints
+  already there from section 4's work), consistent with the app's existing public/no-auth
+  posture.
+
 ## Open items — unresolved, don't assume either way
 
 - **A `/grill-me` session on expanding the chatbot's catalog into NL-to-SQL is
@@ -573,6 +712,13 @@ mockup (sidebar + stat cards + chart grid). Live at
 (Findings & Alerts + Data Coverage), **Settings** (see section 4 for the full nav-item
 mapping and what's genuinely new vs. carried over). All verified end-to-end against the
 live URL via real Playwright screenshots, not just "the deploy succeeded."
+
+The scope grew once more, by explicit user direction, to make the data source itself
+**live**: a real Google Sheet now feeds Supabase on a lazy poll-on-request cycle (no more
+manual `.xlsx` re-sync), and a global date-range filter reaches every dashboard page and
+the chat, with chat's date-scoped answers running the same inject-and-narrate query
+first, LLM-narrates-only-that-result discipline as always. See section 5 for the full
+architecture, verified end-to-end against the live URL the same way.
 
 **In progress, not yet built**: NL-to-SQL catalog expansion — a `/grill-me` session is
 mid-flight, round 1 settled, round 2 awaiting the user's answers (see Open Items).
