@@ -4,9 +4,26 @@ from dataclasses import dataclass
 import openai
 import psycopg
 
-from chatbot.catalog import CATALOG
+from chatbot.catalog import (
+    CATALOG,
+    CROP_DEBTOR_DATE_COLUMN,
+    PIGGERY_DISEASE_OUTBREAK_DATE_COLUMN,
+    POULTRY_MORTALITY_SPIKE_DATE_COLUMN,
+    date_filter_sql,
+)
 from chatbot.fallback import llm_extract_intent, validate_llm_intent
 from chatbot.matcher import match
+
+# Which column the optional global date-range filter applies to, per
+# catalog entry - feed_cost_split isn't here because it already requires
+# its own explicit period parameter, which already scopes it; layering a
+# second, independent date restriction on top would be redundant at best
+# and could silently contradict a period the user explicitly named.
+CATALOG_DATE_COLUMNS = {
+    "poultry_mortality_spike": POULTRY_MORTALITY_SPIKE_DATE_COLUMN,
+    "piggery_disease_outbreak": PIGGERY_DISEASE_OUTBREAK_DATE_COLUMN,
+    "crop_debtor": CROP_DEBTOR_DATE_COLUMN,
+}
 
 UNRESOLVED_TEMPLATE = "I can't answer that yet - I don't have a way to look that up."
 SCOPED_OUT_TEMPLATE = (
@@ -41,8 +58,19 @@ class Answer:
     scoped_out_reason: str | None = None
 
 
-def answer_question(question: str, farm_code: str, dsn: str) -> Answer:
-    conn = psycopg.connect(dsn, autocommit=True)
+def answer_question(question: str, farm_code: str, dsn: str,
+                     date_from=None, date_to=None) -> Answer:
+    """`date_from`/`date_to` are optional: the currently-selected global
+    date filter, if any - matching Savanna's structure, chat always
+    operates within whatever range is currently selected. A date named in
+    the question itself (e.g. "in March") is handled separately by the
+    catalog's own period matching and narrows *within* this range, not
+    instead of it."""
+    # prepare_threshold=None: Supabase's DSN is the transaction-pooler
+    # (pgbouncer) connection string, which is incompatible with psycopg3's
+    # default server-side prepared statements - see sync/engine.py's
+    # matching comment for the failure mode this avoids.
+    conn = psycopg.connect(dsn, autocommit=True, prepare_threshold=None)
     _ensure_query_log_table(conn)
 
     result = match(question, CATALOG)
@@ -79,7 +107,13 @@ def answer_question(question: str, farm_code: str, dsn: str) -> Answer:
         conn.close()
         return answer
 
-    cursor = conn.execute(catalog_entry.sql, result.params)
+    date_column = CATALOG_DATE_COLUMNS.get(result.query_id)
+    filter_params = {}
+    date_filter = (date_filter_sql(date_column, date_from, date_to, filter_params)
+                   if date_column else "")
+    sql = catalog_entry.sql.format(date_filter=date_filter)
+    params = {**result.params, **filter_params}
+    cursor = conn.execute(sql, params)
     columns = [d.name for d in cursor.description]
     computed = [dict(zip(columns, row)) for row in cursor.fetchall()]
 

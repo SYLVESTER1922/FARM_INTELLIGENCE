@@ -13,16 +13,27 @@ the earlier dashboard work.
 """
 
 import base64
+import datetime
 import os
+import time
 
 import gradio as gr
 import psycopg
 
 from chatbot.engine import answer_question
+from sync.engine import sync_sheet_to_supabase
 from ui import charts, queries
 
 FARM_CODE = "NIS-001"  # single real farm today; multi-farm UI is deferred
 GENERIC_ERROR_MESSAGE = "Something went wrong - please try again."
+
+# Lazy TTL cache for the Sheets->Postgres ingestion, not a background
+# poller - Render's free tier can cold-start/sleep between requests, which
+# would silently kill an in-process scheduler with no visibility that it
+# died. Matches Savanna's actual pattern: check on each request, sync at
+# most once per TTL, plus a manual "Refresh Data" button that bypasses it.
+SHEETS_SYNC_TTL_SECONDS = 300
+_sync_state = {"last_synced_at": 0.0, "last_error": None}
 
 _LOGO_PATH = os.path.join(os.path.dirname(__file__), "..", "assets", "netrisyl-logo.png")
 
@@ -40,23 +51,88 @@ def _logo_data_uri() -> str:
     return f"data:image/png;base64,{encoded}"
 
 
+def _parse_date(s):
+    """A date Textbox's raw string -> datetime.date, or None for blank/
+    unparsable input ("all time", the default, and an honest fallback for a
+    typo rather than a crash)."""
+    if not s:
+        return None
+    s = s.strip()
+    if not s:
+        return None
+    try:
+        return datetime.date.fromisoformat(s)
+    except ValueError:
+        return None
+
+
+def _do_sync():
+    """The actual Sheets->Postgres sync call. Never raises - a Sheets API
+    or network hiccup must degrade to serving the last-synced data, not
+    break the dashboard. Records the outcome in _sync_state for the status
+    caption and always stamps last_synced_at (even on failure) so a
+    persistently-failing Sheet doesn't retry on every single request."""
+    try:
+        sync_sheet_to_supabase(
+            os.environ["FARM_INTELLIGENCE_SHEET_ID"],
+            FARM_CODE,
+            os.environ["FARM_INTELLIGENCE_DB_DSN"],
+            os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"],
+        )
+        _sync_state["last_error"] = None
+    except Exception as e:
+        _sync_state["last_error"] = str(e)[:200]
+    finally:
+        _sync_state["last_synced_at"] = time.time()
+
+
+def _maybe_sync_sheets():
+    """Lazy on-request sync: checked on every dashboard connection, but
+    only actually syncs once per SHEETS_SYNC_TTL_SECONDS. See the
+    module-level comment above _sync_state for why this is a lazy check
+    rather than a background poller."""
+    if time.time() - _sync_state["last_synced_at"] >= SHEETS_SYNC_TTL_SECONDS:
+        _do_sync()
+
+
+def force_sync_sheets():
+    """Bypasses the TTL - wired to the manual "Refresh Data" button."""
+    _do_sync()
+
+
+def sync_status_text() -> str:
+    if _sync_state["last_synced_at"] == 0:
+        return "*Data not yet synced from Google Sheets this session.*"
+    age_s = int(time.time() - _sync_state["last_synced_at"])
+    when = f"{age_s}s ago" if age_s < 120 else f"{age_s // 60}m ago"
+    if _sync_state["last_error"]:
+        return f"*⚠️ Last sync attempt ({when}) failed: {_sync_state['last_error']} - showing last-known data.*"
+    return f"*✅ Synced from Google Sheets {when}.*"
+
+
 # ---------------------------------------------------------------------------
-# Chat page - unchanged chat/answer-engine wiring
+# Chat page - unchanged chat/answer-engine wiring, now filter-aware
 # ---------------------------------------------------------------------------
-def handle_message(question: str) -> str:
+def handle_message(question: str, date_from_str: str = "", date_to_str: str = "") -> str:
     try:
         dsn = os.environ["FARM_INTELLIGENCE_DB_DSN"]
-        answer = answer_question(question, farm_code=FARM_CODE, dsn=dsn)
+        answer = answer_question(
+            question, farm_code=FARM_CODE, dsn=dsn,
+            date_from=_parse_date(date_from_str), date_to=_parse_date(date_to_str),
+        )
     except Exception:
         return GENERIC_ERROR_MESSAGE
     return answer.text
 
 
-def _chat_fn(message: str, history: list) -> str:
+def _chat_fn(message: str, history: list, date_from_str: str, date_to_str: str) -> str:
     # `history` is Gradio's own display state (past exchanges) - it is
     # deliberately never passed into handle_message/answer_question, per
-    # the backend's no-multi-turn design (spec-chatbot-ui.md).
-    return handle_message(message)
+    # the backend's no-multi-turn design (spec-chatbot-ui.md). date_from_str/
+    # date_to_str come from the global filter bar via ChatInterface's
+    # additional_inputs - chat always answers within whatever range is
+    # currently selected, matching Savanna's structure.
+    return handle_message(message, date_from_str, date_to_str)
 
 
 # ---------------------------------------------------------------------------
@@ -64,11 +140,17 @@ def _chat_fn(message: str, history: list) -> str:
 # ---------------------------------------------------------------------------
 def _dashboard_conn():
     """A fresh connection for dashboard queries, same DSN/credential pattern
-    handle_message already uses. Raises if the DSN is missing/unreachable -
-    each load_* function below catches that and degrades to an empty state
-    rather than crashing the whole page."""
+    handle_message already uses. Also triggers the lazy Sheets sync check
+    (a no-op unless the TTL has elapsed). Raises if the DSN is missing/
+    unreachable - each load_* function below catches that and degrades to
+    an empty state rather than crashing the whole page."""
+    _maybe_sync_sheets()
     dsn = os.environ["FARM_INTELLIGENCE_DB_DSN"]
-    return psycopg.connect(dsn, autocommit=True)
+    # prepare_threshold=None: Supabase's DSN is the transaction-pooler
+    # (pgbouncer) connection string, which is incompatible with psycopg3's
+    # default server-side prepared statements - see sync/engine.py's
+    # matching comment for the failure mode this avoids.
+    return psycopg.connect(dsn, autocommit=True, prepare_threshold=None)
 
 
 def _stat_card_html(card):
@@ -97,21 +179,24 @@ def _stat_card_html(card):
     )
 
 
-def load_dashboard_stats():
+def load_dashboard_stats(date_from=None, date_to=None):
     try:
         conn = _dashboard_conn()
-        cards = queries.fetch_dashboard_stats(conn)
+        cards = queries.fetch_dashboard_stats(conn, date_from=date_from, date_to=date_to)
     except Exception as e:
         return f'<div class="stat-card">Could not load stats: {str(e)[:150]}</div>'
     return '<div class="stat-cards-row">' + "".join(_stat_card_html(c) for c in cards) + '</div>'
 
 
-def load_dashboard_charts():
+def load_dashboard_charts(date_from=None, date_to=None):
     try:
         conn = _dashboard_conn()
-        herd_growth = charts.headcount_chart(queries.fetch_headcount_by_month(conn))
-        fcr = charts.fcr_chart(queries.fetch_fcr_by_batch(conn))
-        cost_vs_revenue = charts.expenses_vs_revenue_chart(queries.fetch_expenses_vs_revenue(conn))
+        herd_growth = charts.headcount_chart(
+            queries.fetch_headcount_by_month(conn, date_from=date_from, date_to=date_to))
+        fcr = charts.fcr_chart(
+            queries.fetch_fcr_by_batch(conn, date_from=date_from, date_to=date_to))
+        cost_vs_revenue = charts.expenses_vs_revenue_chart(
+            queries.fetch_expenses_vs_revenue(conn, date_from=date_from, date_to=date_to))
         expense_breakdown = charts.expense_breakdown_chart(queries.fetch_expense_breakdown(conn))
         return herd_growth, fcr, cost_vs_revenue, expense_breakdown
     except Exception as e:
@@ -119,24 +204,29 @@ def load_dashboard_charts():
         return empty, empty, empty, empty
 
 
-def load_herd_flock():
+def load_herd_flock(date_from=None, date_to=None):
     try:
         conn = _dashboard_conn()
-        mortality = charts.mortality_chart(queries.fetch_mortality_by_month(conn))
-        fcr = charts.fcr_chart(queries.fetch_fcr_by_batch(conn))
-        headcount = charts.headcount_chart(queries.fetch_headcount_by_month(conn))
+        mortality = charts.mortality_chart(
+            queries.fetch_mortality_by_month(conn, date_from=date_from, date_to=date_to))
+        fcr = charts.fcr_chart(
+            queries.fetch_fcr_by_batch(conn, date_from=date_from, date_to=date_to))
+        headcount = charts.headcount_chart(
+            queries.fetch_headcount_by_month(conn, date_from=date_from, date_to=date_to))
         return mortality, fcr, headcount
     except Exception as e:
         empty = charts.empty_fig(f"Could not load: {str(e)[:150]}")
         return empty, empty, empty
 
 
-def load_financials():
+def load_financials(date_from=None, date_to=None):
     try:
         conn = _dashboard_conn()
-        trend = charts.expenses_vs_revenue_chart(queries.fetch_expenses_vs_revenue(conn))
-        feed_split = charts.feed_cost_by_domain_chart(queries.fetch_feed_cost_by_domain(conn))
-        debtors = queries.fetch_debtors(conn)
+        trend = charts.expenses_vs_revenue_chart(
+            queries.fetch_expenses_vs_revenue(conn, date_from=date_from, date_to=date_to))
+        feed_split = charts.feed_cost_by_domain_chart(
+            queries.fetch_feed_cost_by_domain(conn, date_from=date_from, date_to=date_to))
+        debtors = queries.fetch_debtors(conn, date_from=date_from, date_to=date_to)
         rows = [[r["date"].isoformat(), r["domain"], r["product"], r["buyer"],
                   float(r["total_amount"]), r["batch_ref"]] for r in debtors]
         return trend, feed_split, rows
@@ -154,13 +244,18 @@ def _finding_card(title, body, icon="⚠️"):
     )
 
 
-def load_findings():
+def load_findings(date_from=None, date_to=None):
     try:
         conn = _dashboard_conn()
-        f = queries.fetch_findings(conn)
+        f = queries.fetch_findings(conn, date_from=date_from, date_to=date_to)
     except Exception as e:
         msg = f"Could not load findings: {str(e)[:150]}"
         return f'<div class="finding-card">{msg}</div>' * 3
+
+    # A finding coming back None can mean either "never happened" (no
+    # filter) or "didn't happen within the selected range" (filter active)
+    # - these are different facts, so the fallback text says which.
+    ranged = bool(date_from or date_to)
 
     poultry = f["poultry_mortality_spike"]
     piggery = f["piggery_disease_outbreak"]
@@ -171,7 +266,9 @@ def load_findings():
         (f"Batch <b>{poultry['batch_code']}</b> has a "
          f"<b>{poultry['mortality_pct']}%</b> mortality rate - the highest of "
          f"any poultry batch this period.")
-        if poultry else "No poultry mortality data available.",
+        if poultry else
+        ("No poultry mortality data in the selected range." if ranged
+         else "No poultry mortality data available."),
         icon="🐔",
     )
     piggery_card = _finding_card(
@@ -179,14 +276,18 @@ def load_findings():
         (f"Batch <b>{piggery['batch_ref']}</b> has had "
          f"<b>{piggery['treatment_count']}</b> treatments, "
          f"totalling <b>${float(piggery['total_vet_cost']):.2f}</b> in vet costs.")
-        if piggery else "No piggery health data available.",
+        if piggery else
+        ("No piggery health data in the selected range." if ranged
+         else "No piggery health data available."),
         icon="🐖",
     )
     debtor_card = _finding_card(
         "Unpaid Crop Debtor",
         (f"<b>{debtor['buyer']}</b> owes <b>${float(debtor['total_amount']):.2f}</b> "
          f"for {debtor['product']} (batch {debtor['batch_ref']}).")
-        if debtor else "No outstanding crop payments.",
+        if debtor else
+        ("No outstanding crop payments in the selected range." if ranged
+         else "No outstanding crop payments."),
         icon="🌾",
     )
     return poultry_card + piggery_card + debtor_card
@@ -216,19 +317,21 @@ def load_data_coverage():
     return info, fig
 
 
-def load_feeding():
+def load_feeding(date_from=None, date_to=None):
     try:
         conn = _dashboard_conn()
-        return charts.feed_cost_trend_chart(queries.fetch_feed_cost_by_month(conn))
+        return charts.feed_cost_trend_chart(
+            queries.fetch_feed_cost_by_month(conn, date_from=date_from, date_to=date_to))
     except Exception as e:
         return charts.empty_fig(f"Could not load: {str(e)[:150]}")
 
 
-def load_health():
+def load_health(date_from=None, date_to=None):
     try:
         conn = _dashboard_conn()
-        chart = charts.health_cost_chart(queries.fetch_health_summary(conn))
-        events = queries.fetch_recent_health_events(conn)
+        chart = charts.health_cost_chart(
+            queries.fetch_health_summary(conn, date_from=date_from, date_to=date_to))
+        events = queries.fetch_recent_health_events(conn, date_from=date_from, date_to=date_to)
         rows = [[r["date"].isoformat(), r["domain"], r["batch_ref"], r["event_type"],
                   r["diagnosis"] or "-", float(r["cost"] or 0)] for r in events]
         return chart, rows
@@ -236,10 +339,10 @@ def load_health():
         return charts.empty_fig(f"Could not load: {str(e)[:150]}"), []
 
 
-def load_breeding():
+def load_breeding(date_from=None, date_to=None):
     try:
         conn = _dashboard_conn()
-        summary = queries.fetch_breeding_summary(conn)
+        summary = queries.fetch_breeding_summary(conn, date_from=date_from, date_to=date_to)
     except Exception as e:
         return f"Could not load breeding data: {str(e)[:150]}", []
 
@@ -485,6 +588,26 @@ button.nav-btn-active {
     font-size: 0.95em;
     line-height: 1.5;
 }
+#filter-bar {
+    background: white;
+    border-radius: 12px;
+    border: 1px solid #e5e7eb;
+    padding: 12px 18px;
+    margin-bottom: 16px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+#filter-bar .filter-label {
+    font-size: 0.82em;
+    font-weight: 700;
+    color: #4b5563;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+}
+#filter-bar > div { margin-bottom: 0 !important; }
+#sync-status { font-size: 0.82em; color: #6b7280; margin-left: auto; }
 footer { display: none !important; }
 """
 
@@ -554,6 +677,28 @@ def build_interface() -> gr.Blocks:
         </div>
         """)
 
+        # Global date-range filter: applies across every page (dashboard
+        # stat cards/charts, every other page's charts/tables, and the
+        # Chat page's inject-and-narrate queries) - not per-page. Plain
+        # Textboxes rather than a date-picker widget, defaulting to blank
+        # ("all time"), only re-rendering on explicit "Apply Filter" (not
+        # live-as-you-type), matching Savanna's date_from/date_to +
+        # "Apply Filter" pattern.
+        with gr.Row(elem_id="filter-bar"):
+            gr.HTML('<span class="filter-label">📅 Date Range</span>')
+            date_from_box = gr.Textbox(
+                placeholder="YYYY-MM-DD", label=None, show_label=False,
+                container=False, scale=0, min_width=130,
+            )
+            gr.HTML('<span class="filter-label">to</span>')
+            date_to_box = gr.Textbox(
+                placeholder="YYYY-MM-DD", label=None, show_label=False,
+                container=False, scale=0, min_width=130,
+            )
+            apply_filter_btn = gr.Button("Apply Filter", scale=0, variant="primary")
+            refresh_data_btn = gr.Button("🔄 Refresh Data", scale=0)
+            sync_status_md = gr.Markdown("", elem_id="sync-status")
+
         nav_buttons = []
         pages = []
 
@@ -583,7 +728,9 @@ def build_interface() -> gr.Blocks:
                     gr.ChatInterface(
                         fn=_chat_fn,
                         title=None,
-                        description="Ask a question about your farm's piggery, poultry, or crops data.",
+                        description="Ask a question about your farm's piggery, poultry, or crops data. "
+                                     "Answers respect the date range selected above.",
+                        additional_inputs=[date_from_box, date_to_box],
                     )
                 pages.append(page_chat)
 
@@ -659,18 +806,66 @@ def build_interface() -> gr.Blocks:
         for i, btn in enumerate(nav_buttons):
             btn.click(_make_nav_click(i, len(NAV_ITEMS)), outputs=pages + nav_buttons)
 
-        demo.load(load_dashboard_stats, outputs=[dashboard_stats_html])
-        demo.load(load_dashboard_charts,
-                  outputs=[herd_growth_plot, dash_fcr_plot, cost_revenue_plot,
-                           expense_breakdown_plot])
-        demo.load(load_herd_flock, outputs=[mortality_plot, fcr_plot, headcount_plot])
-        demo.load(load_financials, outputs=[trend_plot, feed_split_plot, debtors_table])
-        demo.load(load_findings, outputs=[findings_html])
-        demo.load(load_data_coverage, outputs=[coverage_info, coverage_plot])
-        demo.load(load_feeding, outputs=[feeding_plot])
-        demo.load(load_health, outputs=[health_plot, health_events_table])
-        demo.load(load_breeding, outputs=[breeding_info, breeding_table])
-        demo.load(load_settings, outputs=[settings_info])
+        all_outputs = [
+            dashboard_stats_html,
+            herd_growth_plot, dash_fcr_plot, cost_revenue_plot, expense_breakdown_plot,
+            mortality_plot, fcr_plot, headcount_plot,
+            trend_plot, feed_split_plot, debtors_table,
+            findings_html,
+            coverage_info, coverage_plot,
+            feeding_plot,
+            health_plot, health_events_table,
+            breeding_info, breeding_table,
+            settings_info,
+            sync_status_md,
+        ]
+
+        def load_all(date_from_str="", date_to_str=""):
+            """Single orchestrator for every page's data, so one "Apply
+            Filter" click (or the initial page load) updates all of them at
+            once - not just whichever page happens to be visible. Each
+            underlying load_* still opens its own connection (unchanged
+            per-page behavior); _dashboard_conn's lazy sync check makes the
+            repeated calls cheap once the TTL window has been checked once."""
+            date_from = _parse_date(date_from_str)
+            date_to = _parse_date(date_to_str)
+
+            stats_html = load_dashboard_stats(date_from, date_to)
+            herd_growth, dash_fcr, cost_revenue, expense_breakdown = \
+                load_dashboard_charts(date_from, date_to)
+            mortality, fcr, headcount = load_herd_flock(date_from, date_to)
+            trend, feed_split, debtors_rows = load_financials(date_from, date_to)
+            findings = load_findings(date_from, date_to)
+            coverage_info, coverage_plot = load_data_coverage()
+            feeding_plot = load_feeding(date_from, date_to)
+            health_plot, health_rows = load_health(date_from, date_to)
+            breeding_info, breeding_rows = load_breeding(date_from, date_to)
+            settings_info = load_settings()
+
+            return (
+                stats_html,
+                herd_growth, dash_fcr, cost_revenue, expense_breakdown,
+                mortality, fcr, headcount,
+                trend, feed_split, debtors_rows,
+                findings,
+                coverage_info, coverage_plot,
+                feeding_plot,
+                health_plot, health_rows,
+                breeding_info, breeding_rows,
+                settings_info,
+                sync_status_text(),
+            )
+
+        def refresh_and_load_all(date_from_str="", date_to_str=""):
+            """"Refresh Data" bypasses the lazy TTL and forces an immediate
+            Sheets->Postgres sync before recomputing everything."""
+            force_sync_sheets()
+            return load_all(date_from_str, date_to_str)
+
+        demo.load(load_all, inputs=[date_from_box, date_to_box], outputs=all_outputs)
+        apply_filter_btn.click(load_all, inputs=[date_from_box, date_to_box], outputs=all_outputs)
+        refresh_data_btn.click(refresh_and_load_all, inputs=[date_from_box, date_to_box],
+                                outputs=all_outputs)
 
     return demo
 
@@ -697,6 +892,15 @@ def _load_local_dev_credentials() -> None:
                     if line.startswith("SUPABASE_DB_DSN="):
                         os.environ["FARM_INTELLIGENCE_DB_DSN"] = line.strip().split("=", 1)[1]
                         break
+
+    if "GOOGLE_SERVICE_ACCOUNT_JSON" not in os.environ:
+        creds_path = os.path.expanduser("~/.config/farm-intelligence/google-service-account.json")
+        if os.path.exists(creds_path):
+            with open(creds_path) as f:
+                os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"] = f.read()
+
+    if "FARM_INTELLIGENCE_SHEET_ID" not in os.environ:
+        os.environ["FARM_INTELLIGENCE_SHEET_ID"] = "1bmjuyGFpqc9qaXf7s-jqVtBxIamE_XcBGb9qGUAjgXE"
 
 
 if __name__ == "__main__":

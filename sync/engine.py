@@ -24,7 +24,13 @@ def _sync_from_workbook(wb, farm_code: str, dsn: str) -> SyncReport:
     satisfy the same minimal interface (`.sheetnames`, `wb[name]` returning
     something read_tab_rows/read_list_values can read), so every _sync_*
     function below runs unchanged against either source."""
-    conn = psycopg.connect(dsn, autocommit=True)
+    # prepare_threshold=None disables psycopg3's server-side prepared
+    # statements - required against Supabase's transaction-pooler DSN
+    # (pgbouncer transaction mode), which can route each statement to a
+    # different backend connection; a statement prepared on one backend
+    # doesn't exist on the next, surfacing as a real
+    # 'prepared statement "_pg3_N" does not exist' error mid-sync.
+    conn = psycopg.connect(dsn, autocommit=True, prepare_threshold=None)
     report = SyncReport()
 
     lists = read_list_values(wb["99_LISTS"]) if "99_LISTS" in wb.sheetnames else {}
@@ -90,12 +96,13 @@ def _sync_from_workbook(wb, farm_code: str, dsn: str) -> SyncReport:
     return report
 
 
-def sync_sheet_to_supabase(sheet_id: str, farm_code: str, dsn: str, creds_path: str) -> SyncReport:
+def sync_sheet_to_supabase(sheet_id: str, farm_code: str, dsn: str, creds_json: str) -> SyncReport:
     """Same sync, sourced from the live Google Sheet instead of the .xlsx
-    workbook. See sync/sheets_io.py for how a Sheet is made to look like an
-    openpyxl Workbook to the _sync_* functions below."""
+    workbook. `creds_json` is the service account key's raw JSON content
+    (a string), not a file path. See sync/sheets_io.py for how a Sheet is
+    made to look like an openpyxl Workbook to the _sync_* functions below."""
     from sync.sheets_io import load_sheets_workbook
-    wb = load_sheets_workbook(sheet_id, creds_path)
+    wb = load_sheets_workbook(sheet_id, creds_json)
     return _sync_from_workbook(wb, farm_code, dsn)
 
 

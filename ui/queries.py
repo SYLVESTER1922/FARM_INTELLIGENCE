@@ -14,9 +14,13 @@ SQL-then-phrase split already established.
 import datetime
 
 from chatbot.catalog import (
+    CROP_DEBTOR_DATE_COLUMN,
     CROP_DEBTOR_SQL,
+    PIGGERY_DISEASE_OUTBREAK_DATE_COLUMN,
     PIGGERY_DISEASE_OUTBREAK_SQL,
+    POULTRY_MORTALITY_SPIKE_DATE_COLUMN,
     POULTRY_MORTALITY_SPIKE_SQL,
+    date_filter_sql,
 )
 
 FEED_COST_BY_DOMAIN_SQL = """
@@ -32,6 +36,7 @@ FEED_COST_BY_DOMAIN_SQL = """
                AND fi.date <= u.date
              ORDER BY fi.date DESC LIMIT 1) AS unit_cost_per_kg
         FROM domain_usage u
+        WHERE 1=1{date_filter}
     )
     SELECT domain, ROUND(SUM(feed_kg), 1) AS total_kg,
            ROUND(SUM(feed_kg * unit_cost_per_kg), 2) AS feed_cost
@@ -43,6 +48,7 @@ FEED_COST_BY_DOMAIN_SQL = """
 MONTHLY_MORTALITY_SQL = """
     SELECT date_trunc('month', date)::date AS month, SUM(deaths) AS deaths
     FROM {table}
+    WHERE 1=1{date_filter}
     GROUP BY 1
     ORDER BY 1
 """
@@ -53,6 +59,7 @@ MONTHLY_HEADCOUNT_SQL = """
             date_trunc('month', date)::date AS month,
             batch_code, {count_col} AS headcount
         FROM {table}
+        WHERE 1=1{date_filter}
         ORDER BY date_trunc('month', date), batch_code, date DESC
     ) latest_per_batch_per_month
     GROUP BY month
@@ -62,15 +69,15 @@ MONTHLY_HEADCOUNT_SQL = """
 PIG_FCR_SQL = """
     WITH feed AS (
         SELECT batch_code, SUM(feed_kg) AS total_feed_kg
-        FROM pig_daily_log GROUP BY batch_code
+        FROM pig_daily_log WHERE 1=1{date_filter} GROUP BY batch_code
     ),
     latest_count AS (
         SELECT DISTINCT ON (batch_code) batch_code, closing_count
-        FROM pig_daily_log ORDER BY batch_code, date DESC
+        FROM pig_daily_log WHERE 1=1{date_filter} ORDER BY batch_code, date DESC
     ),
     latest_weight AS (
         SELECT DISTINCT ON (batch_code) batch_code, avg_weight_kg
-        FROM pig_weights ORDER BY batch_code, date DESC
+        FROM pig_weights WHERE 1=1{date_filter} ORDER BY batch_code, date DESC
     )
     SELECT b.batch_code,
            f.total_feed_kg,
@@ -88,15 +95,15 @@ PIG_FCR_SQL = """
 POULTRY_FCR_SQL = """
     WITH feed AS (
         SELECT batch_code, SUM(feed_kg) AS total_feed_kg
-        FROM poultry_daily_log GROUP BY batch_code
+        FROM poultry_daily_log WHERE 1=1{date_filter} GROUP BY batch_code
     ),
     latest_count AS (
         SELECT DISTINCT ON (batch_code) batch_code, closing_birds
-        FROM poultry_daily_log ORDER BY batch_code, date DESC
+        FROM poultry_daily_log WHERE 1=1{date_filter} ORDER BY batch_code, date DESC
     ),
     latest_weight AS (
         SELECT DISTINCT ON (batch_code) batch_code, avg_weight_g
-        FROM poultry_weights ORDER BY batch_code, date DESC
+        FROM poultry_weights WHERE 1=1{date_filter} ORDER BY batch_code, date DESC
     )
     SELECT b.batch_code,
            f.total_feed_kg,
@@ -113,18 +120,18 @@ POULTRY_FCR_SQL = """
 
 EXPENSES_BY_MONTH_SQL = """
     SELECT date_trunc('month', date)::date AS month, SUM(total_cost) AS total
-    FROM expenses GROUP BY 1 ORDER BY 1
+    FROM expenses WHERE 1=1{date_filter} GROUP BY 1 ORDER BY 1
 """
 
 REVENUE_BY_MONTH_SQL = """
     SELECT date_trunc('month', date)::date AS month, SUM(total_amount) AS total
-    FROM revenue GROUP BY 1 ORDER BY 1
+    FROM revenue WHERE 1=1{date_filter} GROUP BY 1 ORDER BY 1
 """
 
 DEBTORS_SQL = """
     SELECT date, domain, product, buyer, total_amount, batch_ref
     FROM revenue
-    WHERE payment_status = 'Owing'
+    WHERE payment_status = 'Owing'{date_filter}
     ORDER BY date
 """
 
@@ -135,32 +142,45 @@ def _rows(conn, sql, params=None):
     return [dict(zip(columns, row)) for row in cursor.fetchall()]
 
 
-def fetch_mortality_by_month(conn):
+def fetch_mortality_by_month(conn, date_from=None, date_to=None):
     """{'piggery': [(month, deaths), ...], 'poultry': [...]}"""
-    pig = _rows(conn, MONTHLY_MORTALITY_SQL.format(table="pig_daily_log"))
-    poultry = _rows(conn, MONTHLY_MORTALITY_SQL.format(table="poultry_daily_log"))
+    params = {}
+    date_filter = date_filter_sql("date", date_from, date_to, params)
+    sql_pig = MONTHLY_MORTALITY_SQL.format(table="pig_daily_log", date_filter=date_filter)
+    sql_poultry = MONTHLY_MORTALITY_SQL.format(table="poultry_daily_log", date_filter=date_filter)
+    pig = _rows(conn, sql_pig, params)
+    poultry = _rows(conn, sql_poultry, params)
     return {
         "piggery": [(r["month"], r["deaths"] or 0) for r in pig],
         "poultry": [(r["month"], r["deaths"] or 0) for r in poultry],
     }
 
 
-def fetch_headcount_by_month(conn):
+def fetch_headcount_by_month(conn, date_from=None, date_to=None):
     """{'piggery': [(month, headcount), ...], 'poultry': [...]}"""
+    params = {}
+    date_filter = date_filter_sql("date", date_from, date_to, params)
     pig = _rows(conn, MONTHLY_HEADCOUNT_SQL.format(
-        table="pig_daily_log", count_col="closing_count"))
+        table="pig_daily_log", count_col="closing_count", date_filter=date_filter), params)
     poultry = _rows(conn, MONTHLY_HEADCOUNT_SQL.format(
-        table="poultry_daily_log", count_col="closing_birds"))
+        table="poultry_daily_log", count_col="closing_birds", date_filter=date_filter), params)
     return {
         "piggery": [(r["month"], r["headcount"]) for r in pig],
         "poultry": [(r["month"], r["headcount"]) for r in poultry],
     }
 
 
-def fetch_fcr_by_batch(conn):
-    """[{'batch_code', 'domain', 'fcr'}, ...] across both pigs and poultry."""
-    pig = _rows(conn, PIG_FCR_SQL)
-    poultry = _rows(conn, POULTRY_FCR_SQL)
+def fetch_fcr_by_batch(conn, date_from=None, date_to=None):
+    """[{'batch_code', 'domain', 'fcr'}, ...] across both pigs and poultry.
+    When a date range is given, feed consumed and the latest weight/count
+    samples are all bounded to that range - the batch's starting weight
+    stays fixed (a batch-level constant, not a flow value), so FCR for a
+    range that starts partway through a batch's life is an approximation,
+    not an exact "gain within this window" figure."""
+    params = {}
+    date_filter = date_filter_sql("date", date_from, date_to, params)
+    pig = _rows(conn, PIG_FCR_SQL.format(date_filter=date_filter), params)
+    poultry = _rows(conn, POULTRY_FCR_SQL.format(date_filter=date_filter), params)
     return (
         [{"batch_code": r["batch_code"], "domain": "piggery", "fcr": r["fcr"]}
          for r in pig if r["fcr"] is not None] +
@@ -169,29 +189,48 @@ def fetch_fcr_by_batch(conn):
     )
 
 
-def fetch_expenses_vs_revenue(conn):
-    expenses = _rows(conn, EXPENSES_BY_MONTH_SQL)
-    revenue = _rows(conn, REVENUE_BY_MONTH_SQL)
+def fetch_expenses_vs_revenue(conn, date_from=None, date_to=None):
+    params = {}
+    date_filter = date_filter_sql("date", date_from, date_to, params)
+    expenses = _rows(conn, EXPENSES_BY_MONTH_SQL.format(date_filter=date_filter), params)
+    revenue = _rows(conn, REVENUE_BY_MONTH_SQL.format(date_filter=date_filter), params)
     return {
         "expenses": [(r["month"], r["total"] or 0) for r in expenses],
         "revenue": [(r["month"], r["total"] or 0) for r in revenue],
     }
 
 
-def fetch_feed_cost_by_domain(conn):
-    return _rows(conn, FEED_COST_BY_DOMAIN_SQL)
+def fetch_feed_cost_by_domain(conn, date_from=None, date_to=None):
+    params = {}
+    date_filter = date_filter_sql("u.date", date_from, date_to, params)
+    return _rows(conn, FEED_COST_BY_DOMAIN_SQL.format(date_filter=date_filter), params)
 
 
-def fetch_debtors(conn):
-    return _rows(conn, DEBTORS_SQL)
+def fetch_debtors(conn, date_from=None, date_to=None):
+    params = {}
+    date_filter = date_filter_sql("date", date_from, date_to, params)
+    return _rows(conn, DEBTORS_SQL.format(date_filter=date_filter), params)
 
 
-def fetch_findings(conn):
+def fetch_findings(conn, date_from=None, date_to=None):
     """The three planted findings, using the exact same catalog SQL the
-    chatbot itself answers from - real numbers, not hand-typed ones."""
-    poultry_rows = _rows(conn, POULTRY_MORTALITY_SPIKE_SQL)
-    piggery_rows = _rows(conn, PIGGERY_DISEASE_OUTBREAK_SQL)
-    debtor_rows = _rows(conn, CROP_DEBTOR_SQL)
+    chatbot itself answers from - real numbers, not hand-typed ones. When a
+    date range excludes a finding's underlying event, that finding comes
+    back None (honestly reflecting the selected range, not always-full-
+    history) - see spec-chatbot-ui.md's grilled decision on this."""
+    poultry_params = {}
+    poultry_filter = date_filter_sql(
+        POULTRY_MORTALITY_SPIKE_DATE_COLUMN, date_from, date_to, poultry_params)
+    piggery_params = {}
+    piggery_filter = date_filter_sql(
+        PIGGERY_DISEASE_OUTBREAK_DATE_COLUMN, date_from, date_to, piggery_params)
+    debtor_params = {}
+    debtor_filter = date_filter_sql(
+        CROP_DEBTOR_DATE_COLUMN, date_from, date_to, debtor_params)
+
+    poultry_rows = _rows(conn, POULTRY_MORTALITY_SPIKE_SQL.format(date_filter=poultry_filter), poultry_params)
+    piggery_rows = _rows(conn, PIGGERY_DISEASE_OUTBREAK_SQL.format(date_filter=piggery_filter), piggery_params)
+    debtor_rows = _rows(conn, CROP_DEBTOR_SQL.format(date_filter=debtor_filter), debtor_params)
     return {
         "poultry_mortality_spike": poultry_rows[0] if poultry_rows else None,
         "piggery_disease_outbreak": piggery_rows[0] if piggery_rows else None,
@@ -326,61 +365,82 @@ def _sum(pair):
     return pair[0] + pair[1]
 
 
-def fetch_dashboard_stats(conn):
+def fetch_dashboard_stats(conn, date_from=None, date_to=None):
     """Four headline stat cards. Active Headcount and Mortality Rate are
-    genuine flow/snapshot metrics, so they get a real (value as-of the
-    latest real data date) vs (as-of 30 days earlier) percentage. Total
-    Livestock Placed and Piglets Born are lifetime cumulative totals -
-    a "vs 30 days ago" percentage on a cumulative count is misleading
-    (it reads as ~0% on almost every real day, even though the total
-    itself is large and meaningful), so those two instead get a neutral
-    "Since <earliest real date>" caption and no percentage at all.
+    genuine flow/snapshot metrics: with no filter they compare (as-of the
+    latest real data date) vs (30 days earlier), same as always; with a
+    date range selected, the window becomes the selected range itself and
+    the comparison baseline becomes the same-length period immediately
+    before it. Total Livestock Placed and Piglets Born are lifetime
+    cumulative totals - a percentage on a cumulative count is misleading
+    regardless of the filter, so those two always get a neutral "Since
+    <earliest date>" caption instead, using the filter's end date (or the
+    latest real date, if unset) as the as-of cutoff.
     Returns a list of dicts: label, icon, value, and either pct_change
     (a number or None) or caption (a string) - never both."""
-    ref_date = _latest_date(conn)
-    prior_date = ref_date - datetime.timedelta(days=30)
-    window_start = ref_date - datetime.timedelta(days=30)
-    prior_window_start = ref_date - datetime.timedelta(days=60)
+    latest = _latest_date(conn)
+    range_end = date_to or latest
 
-    total_now = (_scalar(conn, TOTAL_PLACED_ASOF_SQL, {"cutoff": ref_date}) +
-                 _scalar(conn, TOTAL_CHICKS_ASOF_SQL, {"cutoff": ref_date}))
+    if date_from and date_to:
+        span_days = (date_to - date_from).days + 1
+        window_start, window_end = date_from, date_to
+        prior_window_end = date_from - datetime.timedelta(days=1)
+        prior_window_start = prior_window_end - datetime.timedelta(days=span_days - 1)
+    else:
+        window_end = range_end
+        window_start = window_end - datetime.timedelta(days=30)
+        prior_window_end = window_start
+        prior_window_start = prior_window_end - datetime.timedelta(days=30)
+
+    total_now = (_scalar(conn, TOTAL_PLACED_ASOF_SQL, {"cutoff": range_end}) +
+                 _scalar(conn, TOTAL_CHICKS_ASOF_SQL, {"cutoff": range_end}))
     earliest_placement = _scalar(conn, EARLIEST_PLACEMENT_SQL, {})
+    placed_caption = (f"Since {earliest_placement} (through {range_end})"
+                       if date_to else f"Since {earliest_placement}")
 
-    active_pig_now, active_poultry_now = _active_headcount_asof(conn, ref_date)
-    active_pig_prior, active_poultry_prior = _active_headcount_asof(conn, prior_date)
+    active_pig_now, active_poultry_now = _active_headcount_asof(conn, window_end)
+    active_pig_prior, active_poultry_prior = _active_headcount_asof(conn, prior_window_end)
     active_now = active_pig_now + active_poultry_now
     active_prior = active_pig_prior + active_poultry_prior
 
-    born_now = _scalar(conn, TOTAL_BORN_ASOF_SQL, {"cutoff": ref_date})
+    born_now = _scalar(conn, TOTAL_BORN_ASOF_SQL, {"cutoff": range_end})
     earliest_farrow = _scalar(conn, EARLIEST_FARROW_SQL, {})
+    if not earliest_farrow:
+        born_caption = "No litters recorded yet"
+    elif date_to:
+        born_caption = f"Since {earliest_farrow} (through {range_end})"
+    else:
+        born_caption = f"Since {earliest_farrow}"
 
     deaths_window = (
         _scalar(conn, DEATHS_IN_WINDOW_SQL.format(table="pig_daily_log"),
-                {"start": window_start, "end": ref_date}) +
+                {"start": window_start, "end": window_end}) +
         _scalar(conn, DEATHS_IN_WINDOW_SQL.format(table="poultry_daily_log"),
-                {"start": window_start, "end": ref_date})
+                {"start": window_start, "end": window_end})
     )
     deaths_prior_window = (
         _scalar(conn, DEATHS_IN_WINDOW_SQL.format(table="pig_daily_log"),
-                {"start": prior_window_start, "end": prior_date}) +
+                {"start": prior_window_start, "end": prior_window_end}) +
         _scalar(conn, DEATHS_IN_WINDOW_SQL.format(table="poultry_daily_log"),
-                {"start": prior_window_start, "end": prior_date})
+                {"start": prior_window_start, "end": prior_window_end})
     )
-    base_now = _sum(_active_headcount_asof(conn, window_start))
-    base_prior = _sum(_active_headcount_asof(conn, prior_window_start))
+    base_now = _sum(_active_headcount_asof(conn, window_end))
+    base_prior = _sum(_active_headcount_asof(conn, prior_window_end))
     mortality_rate = round(deaths_window / base_now * 100, 2) if base_now else 0.0
     mortality_rate_prior = (
         round(deaths_prior_window / base_prior * 100, 2) if base_prior else 0.0
     )
+    mortality_label = ("Mortality Rate (selected range)" if (date_from and date_to)
+                        else "Mortality Rate (30 days)")
 
     return [
         {"label": "Total Livestock Placed", "icon": "🐖", "value": f"{total_now:,}",
-         "caption": f"Since {earliest_placement}"},
+         "caption": placed_caption},
         {"label": "Active Headcount", "icon": "✅", "value": f"{active_now:,}",
          "pct_change": _pct_change(active_now, active_prior)},
         {"label": "Piglets Born (cumulative)", "icon": "🐷", "value": f"{born_now:,}",
-         "caption": f"Since {earliest_farrow}" if earliest_farrow else "No litters recorded yet"},
-        {"label": "Mortality Rate (30 days)", "icon": "⚠️", "value": f"{mortality_rate}%",
+         "caption": born_caption},
+        {"label": mortality_label, "icon": "⚠️", "value": f"{mortality_rate}%",
          "pct_change": _pct_change(mortality_rate, mortality_rate_prior)},
     ]
 
@@ -396,12 +456,14 @@ def fetch_expense_breakdown(conn):
 FEED_COST_BY_MONTH_SQL = """
     SELECT date_trunc('month', date)::date AS month, domain,
            SUM(used_kg * unit_cost_per_kg) AS cost
-    FROM feed_inventory GROUP BY 1, 2 ORDER BY 1, 2
+    FROM feed_inventory WHERE 1=1{date_filter} GROUP BY 1, 2 ORDER BY 1, 2
 """
 
 
-def fetch_feed_cost_by_month(conn):
-    rows = _rows(conn, FEED_COST_BY_MONTH_SQL)
+def fetch_feed_cost_by_month(conn, date_from=None, date_to=None):
+    params = {}
+    date_filter = date_filter_sql("date", date_from, date_to, params)
+    rows = _rows(conn, FEED_COST_BY_MONTH_SQL.format(date_filter=date_filter), params)
     return {
         "piggery": [(r["month"], float(r["cost"] or 0)) for r in rows if r["domain"] == "piggery"],
         "poultry": [(r["month"], float(r["cost"] or 0)) for r in rows if r["domain"] == "poultry"],
@@ -414,21 +476,25 @@ def fetch_feed_cost_by_month(conn):
 
 HEALTH_BY_EVENT_TYPE_SQL = """
     SELECT domain, event_type, COUNT(*) AS event_count, SUM(cost) AS total_cost
-    FROM health_log GROUP BY domain, event_type ORDER BY domain, event_type
+    FROM health_log WHERE 1=1{date_filter} GROUP BY domain, event_type ORDER BY domain, event_type
 """
 
 RECENT_HEALTH_EVENTS_SQL = """
     SELECT date, domain, batch_ref, event_type, diagnosis, cost
-    FROM health_log ORDER BY date DESC LIMIT 10
+    FROM health_log WHERE 1=1{date_filter} ORDER BY date DESC LIMIT 10
 """
 
 
-def fetch_health_summary(conn):
-    return _rows(conn, HEALTH_BY_EVENT_TYPE_SQL)
+def fetch_health_summary(conn, date_from=None, date_to=None):
+    params = {}
+    date_filter = date_filter_sql("date", date_from, date_to, params)
+    return _rows(conn, HEALTH_BY_EVENT_TYPE_SQL.format(date_filter=date_filter), params)
 
 
-def fetch_recent_health_events(conn):
-    return _rows(conn, RECENT_HEALTH_EVENTS_SQL)
+def fetch_recent_health_events(conn, date_from=None, date_to=None):
+    params = {}
+    date_filter = date_filter_sql("date", date_from, date_to, params)
+    return _rows(conn, RECENT_HEALTH_EVENTS_SQL.format(date_filter=date_filter), params)
 
 
 # ---------------------------------------------------------------------------
@@ -437,12 +503,14 @@ def fetch_recent_health_events(conn):
 
 FARROWING_RECORDS_SQL = """
     SELECT sow_tag, service_date, farrow_date, born_alive, stillborn, weaned_count
-    FROM breeding_farrowing ORDER BY service_date
+    FROM breeding_farrowing WHERE 1=1{date_filter} ORDER BY service_date
 """
 
 
-def fetch_breeding_summary(conn):
-    rows = _rows(conn, FARROWING_RECORDS_SQL)
+def fetch_breeding_summary(conn, date_from=None, date_to=None):
+    params = {}
+    date_filter = date_filter_sql("service_date", date_from, date_to, params)
+    rows = _rows(conn, FARROWING_RECORDS_SQL.format(date_filter=date_filter), params)
     completed = [r for r in rows if r["farrow_date"] is not None]
     return {
         "records": rows,

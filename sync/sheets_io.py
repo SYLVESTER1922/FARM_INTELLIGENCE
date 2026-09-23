@@ -122,19 +122,25 @@ class SheetsWorkbook:
         return name in self._views
 
 
-def _sheets_service(creds_path: str):
-    creds = service_account.Credentials.from_service_account_file(
-        creds_path, scopes=SHEETS_SCOPES
+def _sheets_service(creds_json: str):
+    """`creds_json` is the service account key file's raw JSON *content* (a
+    string), not a file path - Render has no persistent filesystem to keep
+    a credential file on, so this follows the same pattern every other
+    secret in this project already uses (a value in an environment
+    variable, never a path only the dev machine has)."""
+    import json
+    creds = service_account.Credentials.from_service_account_info(
+        json.loads(creds_json), scopes=SHEETS_SCOPES
     )
     return build("sheets", "v4", credentials=creds)
 
 
-def load_sheets_workbook(sheet_id: str, creds_path: str) -> SheetsWorkbook:
+def load_sheets_workbook(sheet_id: str, creds_json: str) -> SheetsWorkbook:
     """Fetch every tab's full values in one batchGet call. UNFORMATTED_VALUE
     keeps numbers/booleans as native types and dates as serial day-counts
     (converted to real dates per-tab via DATE_COLUMNS above) rather than
     locale-ambiguous formatted strings."""
-    service = _sheets_service(creds_path)
+    service = _sheets_service(creds_json)
     meta = service.spreadsheets().get(spreadsheetId=sheet_id).execute()
     tab_names = [s["properties"]["title"] for s in meta.get("sheets", [])]
 

@@ -17,6 +17,26 @@ class CatalogQuery:
     required_params: list = field(default_factory=list)
 
 
+def date_filter_sql(column, date_from, date_to, params, param_prefix=""):
+    """A SQL fragment (possibly empty) restricting `column` to
+    [date_from, date_to] - both bounds optional, empty/None means
+    unbounded on that side. Mutates `params` with whichever bounds are
+    actually used. Shared by ui/queries.py (the dashboard's own queries)
+    and chatbot/engine.py (the global date filter applied to catalog
+    queries) - lives here, not in ui/queries.py, so chatbot never has to
+    depend on the ui package to reuse it."""
+    clauses = []
+    if date_from:
+        key = f"{param_prefix}date_from"
+        clauses.append(f"{column} >= %({key})s")
+        params[key] = date_from
+    if date_to:
+        key = f"{param_prefix}date_to"
+        clauses.append(f"{column} <= %({key})s")
+        params[key] = date_to
+    return (" AND " + " AND ".join(clauses)) if clauses else ""
+
+
 FEED_COST_SPLIT_SQL = """
     WITH domain_usage AS (
         SELECT date, 'piggery' AS domain, feed_type, feed_kg FROM pig_daily_log
@@ -40,31 +60,41 @@ FEED_COST_SPLIT_SQL = """
     ORDER BY domain
 """
 
+# {date_filter} is a formatting placeholder (not a %()s SQL param) - see
+# ui/queries.date_filter_sql / chatbot/engine.py's execution step, both of
+# which fill it in with an optional "AND d.date >= %(date_from)s ..."
+# fragment when a date range is in effect, or "" (no-op) when it isn't.
+# FEED_COST_SPLIT_SQL doesn't need one: it already requires its own
+# explicit period parameter, which already scopes it.
 POULTRY_MORTALITY_SPIKE_SQL = """
     SELECT b.batch_code,
            ROUND(100.0 * SUM(d.deaths) / b.chicks_placed, 1) AS mortality_pct
     FROM poultry_batches b
     JOIN poultry_daily_log d ON d.batch_code = b.batch_code
+    WHERE 1=1{date_filter}
     GROUP BY b.batch_code, b.chicks_placed
     ORDER BY mortality_pct DESC
     LIMIT 1
 """
+POULTRY_MORTALITY_SPIKE_DATE_COLUMN = "d.date"
 
 PIGGERY_DISEASE_OUTBREAK_SQL = """
     SELECT batch_ref, COUNT(*) AS treatment_count, SUM(cost) AS total_vet_cost
     FROM health_log
-    WHERE domain = 'piggery' AND event_type = 'Treatment'
+    WHERE domain = 'piggery' AND event_type = 'Treatment'{date_filter}
     GROUP BY batch_ref
     ORDER BY treatment_count DESC
     LIMIT 1
 """
+PIGGERY_DISEASE_OUTBREAK_DATE_COLUMN = "date"
 
 CROP_DEBTOR_SQL = """
     SELECT product, buyer, total_amount, batch_ref
     FROM revenue
-    WHERE domain = 'crops' AND payment_status = 'Owing'
+    WHERE domain = 'crops' AND payment_status = 'Owing'{date_filter}
     ORDER BY date
 """
+CROP_DEBTOR_DATE_COLUMN = "date"
 
 CATALOG = [
     CatalogQuery(
