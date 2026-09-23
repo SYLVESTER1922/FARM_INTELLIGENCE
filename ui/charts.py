@@ -22,7 +22,7 @@ C_NAVY = "#1B2A4E"
 C_CREAM = "#F7F4EC"
 
 PLOTLY_LAYOUT = dict(
-    font=dict(family="Inter, Arial", size=12),
+    font=dict(family="'Plus Jakarta Sans', Arial", size=12),
     plot_bgcolor="white",
     paper_bgcolor="white",
 )

@@ -399,7 +399,7 @@ def load_settings():
 # ---------------------------------------------------------------------------
 CUSTOM_CSS = """
 .gradio-container {
-    font-family: 'Inter', 'Helvetica Neue', system-ui, sans-serif !important;
+    font-family: 'Plus Jakarta Sans', 'Helvetica Neue', system-ui, sans-serif !important;
     width: 100% !important;
     max-width: 1600px !important;
     margin: 0 auto !important;
@@ -615,7 +615,11 @@ theme = gr.themes.Soft(
     primary_hue=gr.themes.colors.green,
     secondary_hue=gr.themes.colors.amber,
     neutral_hue=gr.themes.colors.slate,
-    font=[gr.themes.GoogleFont("Inter"), "system-ui", "sans-serif"],
+    # Explicit weights: the CSS below uses 500/700/800 for nav/stat-value/
+    # brand-name text - GoogleFont's (400, 600) default would leave those
+    # browser-synthesized ("fake bold") instead of using the real font.
+    font=[gr.themes.GoogleFont("Plus Jakarta Sans", weights=(400, 500, 600, 700, 800)),
+          "system-ui", "sans-serif"],
 ).set(
     button_primary_background_fill="#2F6D3A",
     button_primary_background_fill_hover="#1F4A28",
