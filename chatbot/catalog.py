@@ -167,9 +167,18 @@ CATALOG = [
     ),
     CatalogQuery(
         query_id="crop_debtor",
+        # "who owes us money for crops" listed first (not "which crop sales
+        # are unpaid") - tier-2's extraction prompt only shows phrases[0] as
+        # its example (see fallback.py's _catalog_summary), and a real,
+        # reproducible confusion was found where "are we owing anyone" /
+        # "do we owe X" got matched to this entry with the direction
+        # inverted (this query tracks money owed TO the farm, not money the
+        # farm owes others - a different, untracked concept). Leading with
+        # the most direction-explicit phrase gives tier-2 the clearest
+        # possible signal.
         phrases=[
-            "which crop sales are unpaid",
             "who owes us money for crops",
+            "which crop sales are unpaid",
             "any outstanding crop payments",
             "unpaid grain sales",
         ],

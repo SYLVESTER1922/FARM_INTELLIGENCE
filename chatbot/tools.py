@@ -256,8 +256,13 @@ TOOLS_SCHEMA = [
         "name": "q_expenses_to_date",
         "description": (
             "Cumulative total expenses to date (optionally for one "
-            "domain). Use for 'what's the expense amount to date', "
-            "'total expenses so far', 'how much have we spent'."
+            "domain) - money the farm has already spent/paid. Use for "
+            "'what's the expense amount to date', 'total expenses so "
+            "far', 'how much have we spent'. Do NOT use for questions "
+            "about money the farm owes to others / accounts payable "
+            "('are we owing anyone', 'do we owe our suppliers', 'what "
+            "do we owe') - that is a different, untracked concept; do "
+            "not call any tool for those."
         ),
         "parameters": {"type": "object", "properties": {
             "domain": {

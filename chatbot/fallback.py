@@ -13,10 +13,17 @@ from chatbot.matcher import PARAM_EXTRACTORS, MatchResult
 
 
 def _catalog_summary(catalog: list) -> str:
+    """Shows up to 2 example phrases per entry, not just the first - a
+    single example gave too little context to correctly reject a
+    direction-sensitive but vocabulary-overlapping question (a real,
+    reproducible case: "are we owing anyone" was matched to crop_debtor,
+    which tracks money owed *to* the farm, not the reverse - see that
+    entry's own phrase-ordering comment in chatbot/catalog.py)."""
     lines = []
     for entry in catalog:
         needs = ", ".join(entry.required_params) or "nothing"
-        lines.append(f'- "{entry.query_id}": e.g. "{entry.phrases[0]}" (needs: {needs})')
+        examples = " / ".join(f'"{p}"' for p in entry.phrases[:2])
+        lines.append(f'- "{entry.query_id}": e.g. {examples} (needs: {needs})')
     return "\n".join(lines)
 
 
