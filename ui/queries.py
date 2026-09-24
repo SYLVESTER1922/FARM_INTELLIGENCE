@@ -516,3 +516,105 @@ FARM_PROFILE_SQL = """
 def fetch_farm_profile(conn):
     rows = _rows(conn, FARM_PROFILE_SQL)
     return rows[0] if rows else None
+
+
+# ---------------------------------------------------------------------------
+# Domain Lookup page - pick a domain, see its key metrics without typing a
+# chat question. See .scratch/domain-summary-lookup/issues/
+# 01-domain-summary-lookup-tab.md. Mostly reuses existing fetch_* functions'
+# already domain-tagged/domain-split results; CROPS_SUMMARY_SQL below is the
+# one genuinely new query, since no crops-domain summary existed anywhere
+# in this module before this page.
+# ---------------------------------------------------------------------------
+
+_DOMAIN_MODULE_COLUMNS = {
+    "piggery": "module_piggery_active",
+    "poultry": "module_poultry_active",
+    "crops": "module_crops_active",
+}
+
+CROPS_PLANTINGS_SUMMARY_SQL = """
+    SELECT
+        COALESCE(SUM(area_ha), 0) AS total_area_ha,
+        COUNT(DISTINCT plot_code) AS plot_count,
+        COUNT(*) AS planting_count,
+        COUNT(*) FILTER (WHERE status != 'Harvested') AS active_planting_count
+    FROM plantings
+    WHERE 1=1{date_filter}
+"""
+
+CROPS_HARVEST_SQL = """
+    SELECT COALESCE(SUM(quantity_kg), 0) AS total_harvested_kg
+    FROM harvest_log
+    WHERE 1=1{date_filter}
+"""
+
+
+def fetch_crops_summary(conn, date_from=None, date_to=None):
+    """Crops-domain summary: total area planted (filtered by
+    planting_date), plot/planting counts, and total harvested (filtered by
+    harvest_log.date - a real harvest date, not the planting date)."""
+    plantings_params = {}
+    plantings_filter = date_filter_sql("planting_date", date_from, date_to, plantings_params)
+    plantings = _rows(
+        conn, CROPS_PLANTINGS_SUMMARY_SQL.format(date_filter=plantings_filter), plantings_params
+    )[0]
+
+    harvest_params = {}
+    harvest_filter = date_filter_sql("date", date_from, date_to, harvest_params)
+    harvest = _rows(
+        conn, CROPS_HARVEST_SQL.format(date_filter=harvest_filter), harvest_params
+    )[0]
+
+    return {
+        "total_area_ha": float(plantings["total_area_ha"]),
+        "plot_count": plantings["plot_count"],
+        "planting_count": plantings["planting_count"],
+        "active_planting_count": plantings["active_planting_count"],
+        "total_harvested_kg": float(harvest["total_harvested_kg"]),
+    }
+
+
+def fetch_domain_summary(conn, domain, date_from=None, date_to=None):
+    """One domain's key metrics for the Domain Lookup page. `domain` is one
+    of "piggery"/"poultry"/"crops". Returns {"module_active": False} if the
+    farm has that module turned off - an honest state, not empty/misleading
+    data, per this page's ticket."""
+    profile = fetch_farm_profile(conn)
+    if profile is None or not profile[_DOMAIN_MODULE_COLUMNS[domain]]:
+        return {"module_active": False}
+
+    if domain == "crops":
+        summary = fetch_crops_summary(conn, date_from=date_from, date_to=date_to)
+        debtors = [d for d in fetch_debtors(conn, date_from=date_from, date_to=date_to)
+                   if d["domain"] == "crops"]
+        summary["module_active"] = True
+        summary["outstanding_debtor_count"] = len(debtors)
+        summary["outstanding_amount"] = float(sum(d["total_amount"] for d in debtors))
+        return summary
+
+    table = "pig_daily_log" if domain == "piggery" else "poultry_daily_log"
+    count_col = "closing_count" if domain == "piggery" else "closing_birds"
+    # "Current headcount" reuses the same active-as-of-a-date methodology
+    # the dashboard's stat card and the chatbot's tier-3 headcount tool
+    # already use - not fetch_headcount_by_month's coarser monthly grain,
+    # which would understate freshness for a single-domain lookup.
+    cutoff = date_to or _latest_date(conn)
+    headcount = active_headcount_asof(conn, cutoff, table, count_col)
+
+    total_deaths = sum(d for _, d in fetch_mortality_by_month(
+        conn, date_from=date_from, date_to=date_to)[domain])
+    total_feed_cost = sum(c for _, c in fetch_feed_cost_by_month(
+        conn, date_from=date_from, date_to=date_to)[domain])
+    health_rows = [h for h in fetch_health_summary(conn, date_from=date_from, date_to=date_to)
+                   if h["domain"] == domain]
+
+    return {
+        "module_active": True,
+        "as_of": str(cutoff),
+        "headcount": headcount,
+        "total_deaths": total_deaths,
+        "total_feed_cost": float(total_feed_cost),
+        "total_health_cost": float(sum(h["total_cost"] or 0 for h in health_rows)),
+        "total_health_events": sum(h["event_count"] for h in health_rows),
+    }

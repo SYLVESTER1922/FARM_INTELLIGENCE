@@ -394,6 +394,56 @@ def load_settings():
     )
 
 
+def _domain_summary_html(domain, summary):
+    if not summary.get("module_active", True):
+        return (
+            f'<div class="finding-card">The {domain.capitalize()} module is turned off '
+            f'for this farm - turn it on in the farm profile to see this summary.</div>'
+        )
+
+    if domain == "crops":
+        cards = [
+            {"icon": "🌾", "label": "Total Area Planted",
+             "value": f"{summary['total_area_ha']:.1f} ha"},
+            {"icon": "📋", "label": "Plots", "value": summary["plot_count"]},
+            {"icon": "🌱", "label": "Active Plantings",
+             "value": f"{summary['active_planting_count']} / {summary['planting_count']}"},
+            {"icon": "📦", "label": "Total Harvested",
+             "value": f"{summary['total_harvested_kg']:.1f} kg"},
+            {"icon": "💰", "label": "Outstanding Debtors",
+             "value": f"{summary['outstanding_debtor_count']} "
+                      f"(${summary['outstanding_amount']:.2f})"},
+        ]
+    else:
+        cards = [
+            {"icon": "✅", "label": f"Current Headcount (as of {summary['as_of']})",
+             "value": f"{summary['headcount']:,}"},
+            {"icon": "⚠️", "label": "Deaths (selected range)",
+             "value": summary["total_deaths"]},
+            {"icon": "🧺", "label": "Feed Cost (selected range)",
+             "value": f"${summary['total_feed_cost']:.2f}"},
+            {"icon": "🏥", "label": "Health Events (selected range)",
+             "value": f"{summary['total_health_events']} "
+                      f"(${summary['total_health_cost']:.2f})"},
+        ]
+
+    return '<div class="stat-cards-row">' + "".join(
+        f'<div class="stat-card"><div class="stat-icon">{c["icon"]}</div>'
+        f'<div class="stat-body"><div class="stat-value">{c["value"]}</div>'
+        f'<div class="stat-label">{c["label"]}</div></div></div>'
+        for c in cards
+    ) + '</div>'
+
+
+def load_domain_summary(domain, date_from=None, date_to=None):
+    try:
+        conn = _dashboard_conn()
+        summary = queries.fetch_domain_summary(conn, domain, date_from=date_from, date_to=date_to)
+    except Exception as e:
+        return f'<div class="stat-card">Could not load domain summary: {str(e)[:150]}</div>'
+    return _domain_summary_html(domain, summary)
+
+
 # ---------------------------------------------------------------------------
 # Layout
 # ---------------------------------------------------------------------------
@@ -642,6 +692,7 @@ NAV_ITEMS = [
     ("breeding", "🍼", "Breeding"),
     ("finance", "💰", "Finance"),
     ("reports", "📊", "Reports"),
+    ("lookup", "🔍", "Domain Lookup"),
     ("settings", "⚙️", "Settings"),
 ]
 
@@ -801,6 +852,17 @@ def build_interface() -> gr.Blocks:
                             coverage_plot = gr.Plot(label="", show_label=False)
                 pages.append(page_reports)
 
+                # ---- Domain Lookup --------------------------------------------
+                with gr.Column(visible=False) as page_lookup:
+                    gr.HTML('<div class="sidebar-card"><h3>Domain Lookup</h3></div>')
+                    domain_dropdown = gr.Dropdown(
+                        choices=[("Piggery", "piggery"), ("Poultry", "poultry"),
+                                 ("Crops", "crops")],
+                        value="piggery", label="Domain",
+                    )
+                    domain_summary_html = gr.HTML()
+                pages.append(page_lookup)
+
                 # ---- Settings ------------------------------------------------
                 with gr.Column(visible=False) as page_settings:
                     with gr.Group(elem_classes=["sidebar-card"]):
@@ -820,11 +882,12 @@ def build_interface() -> gr.Blocks:
             feeding_plot,
             health_plot, health_events_table,
             breeding_info, breeding_table,
+            domain_summary_html,
             settings_info,
             sync_status_md,
         ]
 
-        def load_all(date_from_str="", date_to_str=""):
+        def load_all(date_from_str="", date_to_str="", domain="piggery"):
             """Single orchestrator for every page's data, so one "Apply
             Filter" click (or the initial page load) updates all of them at
             once - not just whichever page happens to be visible. Each
@@ -844,6 +907,7 @@ def build_interface() -> gr.Blocks:
             feeding_plot = load_feeding(date_from, date_to)
             health_plot, health_rows = load_health(date_from, date_to)
             breeding_info, breeding_rows = load_breeding(date_from, date_to)
+            domain_summary = load_domain_summary(domain, date_from, date_to)
             settings_info = load_settings()
 
             return (
@@ -856,20 +920,31 @@ def build_interface() -> gr.Blocks:
                 feeding_plot,
                 health_plot, health_rows,
                 breeding_info, breeding_rows,
+                domain_summary,
                 settings_info,
                 sync_status_text(),
             )
 
-        def refresh_and_load_all(date_from_str="", date_to_str=""):
+        def refresh_and_load_all(date_from_str="", date_to_str="", domain="piggery"):
             """"Refresh Data" bypasses the lazy TTL and forces an immediate
             Sheets->Postgres sync before recomputing everything."""
             force_sync_sheets()
-            return load_all(date_from_str, date_to_str)
+            return load_all(date_from_str, date_to_str, domain)
 
-        demo.load(load_all, inputs=[date_from_box, date_to_box], outputs=all_outputs)
-        apply_filter_btn.click(load_all, inputs=[date_from_box, date_to_box], outputs=all_outputs)
-        refresh_data_btn.click(refresh_and_load_all, inputs=[date_from_box, date_to_box],
-                                outputs=all_outputs)
+        filter_inputs = [date_from_box, date_to_box, domain_dropdown]
+        demo.load(load_all, inputs=filter_inputs, outputs=all_outputs)
+        apply_filter_btn.click(load_all, inputs=filter_inputs, outputs=all_outputs)
+        refresh_data_btn.click(refresh_and_load_all, inputs=filter_inputs, outputs=all_outputs)
+        def _domain_summary_from_strings(domain, date_from_str, date_to_str):
+            return load_domain_summary(domain, _parse_date(date_from_str), _parse_date(date_to_str))
+
+        # The domain dropdown also updates instantly on its own, without
+        # waiting for Apply Filter - switching domains is a much lighter,
+        # more frequent action than changing the date range.
+        domain_dropdown.change(
+            _domain_summary_from_strings, inputs=[domain_dropdown, date_from_box, date_to_box],
+            outputs=[domain_summary_html],
+        )
 
     return demo
 
