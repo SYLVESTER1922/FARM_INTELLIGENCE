@@ -9,11 +9,16 @@ that answers the project's original motivating question ("how does feed cost spl
 between pigs and chickens") in plain language, for real, against the cloud database, at
 `https://netrisyl-farm-intelligence.onrender.com`.
 
-**Most recent phase**: the data source went fully live. A real Google Sheet now feeds
-Supabase on a lazy poll-on-request cycle (no more manual `.xlsx` re-sync), and a global
-date-range filter reaches every dashboard page and the chat's inject-and-narrate queries
-— both modeled on the sibling Savanna QSR Intelligence product's actual architecture
-(read directly from its repo, not assumed). See section 5.
+**Most recent phase**: the chatbot's fixed 4-query catalog grew into a real, safe
+expansion mechanism — a tier-0 (greetings/help) and a tier-3 (OpenAI native tool-calling
+over real Python query functions, never LLM-generated SQL) sitting alongside the
+original tier-1/tier-2 catalog, unchanged. This formally resolved a `/grill-me` session
+that had been parked mid-flight for most of this project's history. See section 6.
+Before that, the data source went fully live: a real Google Sheet now feeds Supabase on
+a lazy poll-on-request cycle (no more manual `.xlsx` re-sync), and a global date-range
+filter reaches every dashboard page and the chat's inject-and-narrate queries — both
+modeled on the sibling Savanna QSR Intelligence product's actual architecture (read
+directly from its repo, not assumed). See section 5.
 
 ## Repo state
 
@@ -95,17 +100,34 @@ date-range filter reaches every dashboard page and the chat's inject-and-narrate
     `demo.load()` calls into one `load_all()` orchestrator, and fixed a real bug this
     surfaced (`prepare_threshold=None`, see section 5) that was silently breaking
     Sheets syncs against Supabase's pooled connection.
+  - `9c41fba` — this doc's previous update (live Google Sheets sync + date-range
+    filtering).
+  - `5daf933` — switched the app's font from Inter to Plus Jakarta Sans, with explicit
+    weights (400/500/600/700/800) rather than Gradio's `GoogleFont` default (400, 600),
+    which would have left the CSS's existing 700/800-weight text browser-synthesized
+    ("fake bold") instead of using the real font.
+  - `bc00340` — `spec-chatbot-catalog-expansion.md`, formally closing out the parked
+    NL-to-SQL grilling session (see section 6) with a hard constraint the user set
+    partway through this project's life: no free-form LLM-generated or executed SQL.
+  - `c51edca` — tickets 01–06 implemented: tier-0 (greetings/help), a targeted
+    `missing_parameter` clarifying response, and tier-3's core dispatch mechanism plus
+    three starter tools (headcount, crop area planted, weather lookup). See section 6.
+  - `872aaaa` — tickets 07–08: two more tier-3 tools (crop types listing, cumulative
+    expenses to date), both sourced from real `query_log` evidence generated within
+    minutes of the tickets 01–06 deploy going live. See section 6.
 - Throwaway branch `prototype/supabase-domain-join-test` (`447dbec`) — the SQLite
   prototype that first found the sync's feed_inventory grain issue. Deliberately not
   merged into `main` (prototypes are a primary source kept on their own branch here).
 
-## What's built, in four layers
+## What's built, in six layers
 
-**The first three layers each have a complete spec** — read them plus their ticket files
-for full design rationale and acceptance criteria; this doc summarizes, it doesn't
-duplicate them. **The fourth (dashboard) was built directly, by explicit user
-instruction, with no spec/ticket ceremony** — see section 4 for why and what that means
-for its documentation here.
+**Layers 1–3 and 6 each have a complete spec** — read them plus their ticket files for
+full design rationale and acceptance criteria; this doc summarizes, it doesn't duplicate
+them. **Layer 4 (dashboard) was built directly, by explicit user instruction, with no
+spec/ticket ceremony** — see section 4 for why and what that means for its documentation
+here. **Layer 5 (live-data architecture)** was grilled first, then built directly
+without a formal written spec (the grilling session's settled decisions served that
+role) — see section 5.
 
 ### 1. Sync engine (`sync/`) — `spec-supabase-sync.md`, tickets 01–06
 
@@ -613,30 +635,186 @@ upholding the same principle).
   already there from section 4's work), consistent with the app's existing public/no-auth
   posture.
 
+### 6. Chatbot catalog expansion: tier-0 + tier-3 — `spec-chatbot-catalog-expansion.md`, tickets 01–08
+
+**Context this closes out**: since early in this project, a `/grill-me` session on
+expanding the chatbot beyond its fixed 4-query catalog had been parked mid-flight -
+round 1 settled (hybrid tiering, full schema scope, honest refusal, one-shot), round 2's
+six questions asked but never answered. The user later set a hard constraint that
+reframed the whole design space: **no free-form LLM-generated or executed SQL, in any
+form** - ruled out entirely as a safety/correctness risk, not deferred. This required a
+fresh three-round grilling session (not a resumption of the old one, since several of
+round 2's original six questions - SQL safety guardrails, retry policy on malformed
+generated SQL - were specifically about free-form SQL and had to be reframed or retired
+once that was off the table) that also required re-reading, not assuming, how two
+sibling Netrisyl products actually work: Savanna QSR Intelligence and Lobels Stores
+Intelligence. **A wrong claim made mid-session and corrected**: Savanna's chat was
+initially believed to be one-shot like this project's; re-cloning and reading its actual
+`chat()` function directly showed it threads conversation `history` into every call,
+same as Lobels - both sibling products are genuinely multi-turn, this one deliberately
+isn't (see below).
+
+**What both siblings actually do, verified by reading their real code, not assumed**:
+neither writes SQL. Both register ~10-12 medium-granularity Python functions as OpenAI
+native tools (`tool_choice="auto"`); the model picks one, the real function runs (pandas
+on a pre-filtered dataframe for Savanna, Supabase REST + Python aggregation for Lobels),
+a second call narrates only the JSON result. This is the pattern tier-3 below adopts.
+
+**Settled design** (full detail and rationale in the spec):
+- **Tier-0** (new, cheapest, checked first): a curated, small set of greeting/
+  capability phrases (`chatbot/greetings.py`), matched by exact normalized-token-set
+  equality against the whole question - deliberately *not* tier-1's fuzzy recall
+  scoring, which was found during implementation to be unsafe for this use (a short
+  phrase like "hi" would score a perfect match against any question merely containing
+  the word "hi" anywhere in it, including a real data question). Zero LLM calls.
+- **`missing_parameter` now gets a targeted clarifying response** (e.g. "which month?")
+  instead of the same generic wall as a true no-match, and never escalates further -
+  tier-1/tier-2 already knew *which* query type this was, just not one required detail.
+- **Tier-3** (`chatbot/tools.py`): OpenAI native tool-calling over medium-granularity
+  Python functions, reached only on a true `no_match`/`ambiguous` from tiers 1-2 (never
+  `missing_parameter` or `scoped_out`). Every tool executes parameterized queries only;
+  closed-vocabulary arguments (a domain name) are validated against a fixed list before
+  querying and fail as a single, final failure with no retry (same precedent as
+  tier-2's own validation); free-text arguments are trusted to the database. Module
+  scoping is statically declared per tool (a tool that can touch multiple domains
+  declares all of them, mirroring the existing catalog's rule) and reuses the exact
+  same uniform check. The global date-range filter applies via whichever mechanism
+  actually fits a given tool's query shape - a point-in-time cutoff for a snapshot tool
+  (headcount, weather), the same `{date_filter}`/`date_filter_sql` range pattern
+  tiers 1-2 already use for a genuine range aggregate (crop area, crop types, expenses
+  to date) - both are the "same mechanism" in spirit (respecting whichever range is
+  currently selected), just applied differently depending on query shape, not two
+  inconsistent systems.
+- **`chatbot/data_dictionary.py`**: a curated, hand-maintained (never live schema
+  introspection) description of what the farm's data does and doesn't track backs one
+  more bounded LLM call, made only on a genuine full miss at every tier, so the chatbot
+  can honestly distinguish "not tracked at all" (e.g. accounts payable - money the farm
+  owes suppliers) from a generic wall, rather than treating every unanswerable question
+  identically. Never surfaces raw table/column names.
+- **`query_log`** gained `tool_name`/`tool_arguments` columns (via
+  `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`, idempotent against the already-existing
+  production table, same pattern the sync engine already uses) - every tier-3 hit
+  records which tool and which validated arguments, so real usage can drive which tool
+  to build next (see below - this happened almost immediately).
+- **Testing**: the primary seam (`answer_question`) is unchanged; one new, narrow,
+  explicitly-agreed secondary seam (`resolve_tool_call`) is tested directly with real
+  OpenAI calls, asserting *which* tool gets selected for canonical phrasings - the direct
+  analogue of tier-2's `validate_llm_intent` already being tested this way, and the only
+  way to catch a future tool's registration silently changing which tool gets picked for
+  an existing one's intended phrasing.
+- **Multi-turn conversation memory was explicitly re-evaluated and still deferred** -
+  now with the correct fact that both sibling products support it, not the earlier wrong
+  belief that only one did. Kept separate scope deliberately, not bundled in.
+
+**Tickets 01-06** (`.scratch/chatbot-catalog-expansion/issues/`), all done: 01 tier-0,
+02 the `missing_parameter` fix, 03 tier-3's core dispatch + first tool (real pig/poultry
+headcount, reusing the dashboard's existing "active as of a date" methodology -
+**relocated** from `ui/queries.py` into `chatbot/catalog.py`'s new
+`active_headcount_asof`, mirroring `date_filter_sql`'s existing placement there, so
+tier-3 and the dashboard share one source of truth instead of two copies), 04 crop area
+planted, 05 weather-log lookup, 06 the data-dictionary honest refusals. **Two real bugs
+found and fixed along the way**: `_find_inactive_domain` produced invalid SQL
+(`SELECT  FROM farm_profile...`) for a tool declaring zero domains (weather is
+farm-wide, not owned by any single module) - every existing catalog entry always
+declared at least one domain, so this was never hit before tier-3. **One real
+limitation found and honestly documented, not fixed** (ticket 06): the real logged
+phrasing "Do we owe anyone money?" is genuinely borderline enough (shares vocabulary
+with `crop_debtor`'s own catalog phrase "who owes US money") that tier-2's classifier
+occasionally, non-deterministically misroutes it there instead of reaching the new
+gap-explanation path - documented in the test file as a pre-existing characteristic of
+tier-2, out of scope to fix here.
+
+**Tickets 07-08**, added within minutes of the 01-06 deploy going live, from real
+`query_log` evidence a live user actually generated against production: "What crops do
+we have?" (a listing, distinct from ticket 04's area total) and "What's the expense
+amount to date?" (a cumulative total, matching the dashboard's existing cumulative
+stat-card treatment - "as of" a cutoff, not a `date_from`-bounded range) both got the
+generic unresolved wall despite being real, answerable questions. Both new tools are
+pure reuse of ticket 03's infrastructure - no changes to the dispatch mechanism itself.
+Also from that same live session: **"Are you sure?" is not a bug** - it's the expected,
+designed cost of chat being deliberately one-shot; there's no context for a follow-up
+question to resolve against. Documented, not silently "fixed" with ad-hoc memory.
+
+**Every tier-3 tool and the data-dictionary refusal path were verified against real
+production Supabase data, independently cross-checked against a direct query each
+time**, not just local test-DB coverage - e.g. real pig headcount (12, as of
+2026-09-15), real crop area (23.0 ha), real crop types (Groundnuts, Maize, Soyabean,
+Tomatoes), real cumulative expenses (30380.06 as of 2026-09-14), real weather
+(2026-09-15, 6.7-21°C, 0mm rain, 47% humidity) - each confirmed to match a direct SQL
+query against the same live database, then confirmed again live through the deployed
+Render app via `gradio_client`, not assumed from "the deploy succeeded."
+
+**A separate, real evaluation was run and its finding acted on**: the user asked
+whether GPT-4o-mini could reliably handle farm questions in Shona, given voice input
+(a small, real, already-proven pattern in Lobels - `gr.Audio` + Whisper transcription,
+verified by reading Lobels' actual code) was also on the table. A real spike (translate
+representative questions to Shona, back-translate, and ask GPT-4o-mini to answer them
+cold) found a genuine, reproducible vocabulary-level defect: GPT-4o-mini twice
+mistranslated "pigs" as "mbudzi" (goats) and "mombe" (cattle) in Shona, and then
+answered *entirely about the wrong animal* when asked those same (its own) mistranslated
+questions - confirmed via back-translation, not assumed. General Shona grammar read as
+genuinely decent elsewhere (crops/weather/debtor questions round-tripped cleanly). The
+user decided to drop the Shona feature rather than build on this defect. **Worth
+knowing if Shona is ever revisited**: this is a real, narrow, livestock-vocabulary gap,
+not a blanket "Shona doesn't work" finding, and would need a native speaker's review,
+not another automated spike, before any real investment.
+
+**A broader expanded-scope analysis was done (not built)** for seven possible next
+directions, with the user's sequencing decision recorded here in case a future session
+picks any of these up out of order:
+1. **Exhaustive tool coverage** - open-ended, no fixed target count; sequenced as
+   ongoing, evidence-driven batches (cross-checked against what the dashboard's charts
+   already show, so chat fills genuine gaps rather than duplicating on-screen data),
+   with a fixed-question tool-selection accuracy eval re-run as each batch lands, to
+   catch degradation early rather than assume tool-calling scales past the ~10-12 tools
+   proven in Savanna/Lobels.
+2. **Multi-turn conversation memory** - deferred until tool coverage stabilizes; token
+   cost compounds with #1 (both resend more content per call), so the user doesn't want
+   them landing back-to-back without re-checking real cost/latency.
+3. **Query result caching** - deferred alongside #2, since its real payoff (caching
+   follow-up questions) is low while chat stays one-shot. Technically straightforward
+   when revisited: `_sync_state["last_synced_at"]` (from section 5's live-sync work)
+   is exactly the invalidation key needed - no cached answer can survive past the last
+   real sync.
+4. **Suggested follow-up questions** - sequenced alongside future tool batches, using a
+   curated per-tool mapping (each tool declares its own plausible follow-ups) rather
+   than an LLM call per answer, to add zero per-turn latency/cost.
+5. **Domain summary lookup tab** (like Lobels' "Material Lookup") - confirmed
+   independent of all of this chatbot work; ticketed separately at
+   `.scratch/domain-summary-lookup/issues/01-domain-summary-lookup-tab.md`, buildable
+   almost entirely from `ui/queries.py`'s existing functions (one small new crops-only
+   query needed - no equivalent exists there yet). **Not yet built.**
+6. **Voice input** - small, proven, independent; can slot in anytime. Verified for real
+   against Lobels' actual code: `gr.Audio(sources=["microphone"])` +
+   `mic.stop_recording(transcribe, ...)` + a ~10-line Whisper (`whisper-1`) call, feeding
+   the existing message textbox - zero changes needed to `chatbot/engine.py`.
+7. **Shona language support** - dropped by the user after the real spike above found a
+   concrete vocabulary defect (see above). Not pursued further.
+
 ## Open items — unresolved, don't assume either way
 
-- **A `/grill-me` session on expanding the chatbot's catalog into NL-to-SQL is
-  mid-flight, not abandoned.** Goal: move beyond the fixed 4-query catalog so the
-  chatbot "responds to any information that is available," per explicit user request.
-  Round 1 is **settled**: hybrid approach (keep the existing catalog as a fast tier-1/
-  tier-2 path for the 3 planted findings + feed-cost-split, add NL-to-SQL as a new
-  fallback tier only when the catalog doesn't match at all), full 23-tab/all-domain
-  schema scope, still refuse honestly for anything genuinely outside the database
-  (no hallucinating beyond real data), and keep the interaction one-shot (no
-  conversation memory) for this pass. Round 2 was **asked but never answered** — the
-  user redirected to the dashboard work before responding. Six open questions, each with
-  a recommended answer already proposed, still need the user's decision: (1) SQL safety
-  guardrails (read-only DB role + syntactic allowlist + timeout/row cap vs. prompt-only
-  trust), (2) how the LLM learns the schema (hand-maintained semantic description vs.
-  live `information_schema` introspection), (3) module-scoping detection for dynamic
-  queries (LLM also returns structured domain tags, validated against the closed
-  vocabulary, vs. parsing table names out of the generated SQL), (4) what `query_log`
-  should record for this tier (the generated SQL itself vs. just `intent_source`), (5)
-  testing strategy (real DB + real OpenAI, assert on answer content only, never on exact
-  generated SQL text), (6) retry policy on malformed generated SQL (one bounded retry
-  with the DB error fed back vs. none). **Do not silently proceed with NL-to-SQL
-  implementation without first getting the user's round-2 answers** — the recommended
-  answers are proposals, not decisions.
+- ~~A `/grill-me` session on expanding the chatbot's catalog into NL-to-SQL was
+  mid-flight~~ — **resolved.** The user set a hard constraint (no free-form
+  LLM-generated/executed SQL, ruled out entirely) that made the original round-2
+  questions moot as framed; a fresh three-round grilling session settled tier-0 +
+  tier-3 tool-calling instead, fully implemented across tickets 01-08. See section 6.
+- **A real, unfixed tier-2 classification ambiguity, found while building ticket 06,
+  documented but out of scope to fix**: the phrasing "Do we owe anyone money?" shares
+  enough vocabulary with `crop_debtor`'s own catalog phrase ("who owes US money for
+  crops") that tier-2's LLM classifier occasionally, non-deterministically misroutes it
+  there instead of correctly falling through to a no-match. This is a pre-existing
+  characteristic of tier-2's classification (not introduced by tier-3/section 6's work),
+  worth hardening at some point - probably means making the catalog's phrase/description
+  summary given to tier-2 more explicit about directionality (money owed *to* the farm
+  vs. *by* the farm), not something to guess a fix for without testing against the real
+  API again.
+- **Seven possible next directions for this chatbot work were analyzed but not built**
+  (exhaustive tool coverage, multi-turn, query caching, suggested follow-ups, a domain
+  summary tab, voice input, Shona support) - full detail and the user's sequencing
+  decision are in section 6's closing paragraphs. Voice input and the domain-summary tab
+  are both confirmed small/independent and could be picked up anytime; Shona was
+  dropped after a real spike found a concrete defect; the rest are deliberately
+  sequenced after further evidence-driven tool-coverage batches land.
 - **`~/.claude/settings.json` question still never answered.** Whether to set
   `permissions.blockReadsOutsideWorkingDirectories` from `true` to `false` (a global,
   not project-scoped, sandboxing setting). Still `true`. Ask before touching it.
@@ -720,41 +898,55 @@ the chat, with chat's date-scoped answers running the same inject-and-narrate qu
 first, LLM-narrates-only-that-result discipline as always. See section 5 for the full
 architecture, verified end-to-end against the live URL the same way.
 
-**In progress, not yet built**: NL-to-SQL catalog expansion — a `/grill-me` session is
-mid-flight, round 1 settled, round 2 awaiting the user's answers (see Open Items).
+The scope grew a final time, by explicit user direction, to make the chatbot answer
+"any question the data can actually support," with a hard constraint ruling out
+free-form LLM-generated SQL entirely. **That's now done, tested, and live too**: tier-0
+(greetings/help) and tier-3 (OpenAI native tool-calling over real, safe Python query
+functions - headcount, crop area, crop types, weather, cumulative expenses) sit
+alongside the original tier-1/tier-2 catalog, unchanged. A curated data dictionary backs
+honest "we don't track that" refusals. Two of the eight tickets that built this
+(07-08) were themselves driven by real `query_log` evidence generated within minutes of
+first deploying the rest - the observability this whole feature added is already
+proving out its own premise. See section 6 for the full architecture and the seven
+further directions analyzed (not built) for whoever picks this up next.
 
-**Not built, still deferred**: multi-turn conversation handling (explicitly out of
-scope — each question resolved independently), any analysis/dashboarding on top of
-`query_log` specifically (the observability table and write path exist; nothing reads
-*that* table yet — the new dashboard reads the operational farm-data tables directly,
-not `query_log`), farm-switching UI or a module selector (explicitly deferred — there's
-only one real farm today), and a dedicated help/capabilities response for questions like
-"what can I ask you?" (a known, documented rough edge — see the catalog-scope limitation
-above).
+**Not built, still deferred, by explicit user sequencing decision** (see section 6's
+closing paragraphs for the full reasoning): multi-turn conversation handling, query
+result caching, further exhaustive tool coverage (deliberately paced in evidence-driven
+batches, not attempted all at once), suggested follow-up question chips, and a domain
+summary lookup tab (confirmed independent of the chatbot work, ticketed separately at
+`.scratch/domain-summary-lookup/`). Voice input is proven small and could slot in
+anytime. Shona language support was evaluated via a real spike, found a genuine
+vocabulary defect, and was dropped by the user rather than pursued further. Farm-
+switching UI or a module selector remains deferred - there's only one real farm today.
+Any analysis/dashboarding on top of `query_log` specifically also remains unbuilt (the
+table and write path exist and are now richer with tool-call data; nothing reads that
+table yet beyond the ad-hoc real-usage checks described in section 6).
 
 ## Suggested skills for the next session
 
-- **mattpocock-skills:grilling** — **first priority if the NL-to-SQL catalog expansion
-  is the next task**: resume the mid-flight session rather than restarting it. Round 1 is
-  settled (hybrid tiering, full schema, honest refusal, one-shot); round 2's six
-  questions (SQL safety, schema description method, module-scoping detection, `query_log`
-  fields, testing strategy, retry policy) are asked with recommended answers already
-  proposed, just waiting on the user. See Open Items for the exact questions.
-- **mattpocock-skills:to-spec** / **to-tickets** — once the grilling session above closes
-  out, or for any other feature (a help/capabilities intent, multi-farm support) with
-  open design questions worth stress-testing first, the same way the sync,
-  chatbot-engine, and chatbot-UI designs were all grilled before being spec'd.
-- **mattpocock-skills:tdd** — for any further catalog growth or new capability on
-  `answer_question`; the seam and testing-split conventions above are now
-  well-established precedent to follow. Note: the dashboard (section 4) deliberately did
-  *not* follow this — no spec, no tickets, no automated tests, by explicit user
-  instruction — so don't assume that layer follows the same conventions as the other
-  three without checking first.
+- **mattpocock-skills:tdd** — for any further tier-3 tool (evidence-driven batches,
+  per section 6's sequencing decision) or new capability on `answer_question`; the seam
+  and testing-split conventions (the primary `answer_question` black-box seam plus the
+  one narrow, explicitly-agreed `resolve_tool_call` exception) are now well-established
+  precedent across four rounds of catalog growth. Note: the dashboard (section 4)
+  deliberately did *not* follow this — no spec, no tickets, no automated tests, by
+  explicit user instruction — so don't assume that layer follows the same conventions
+  without checking first.
+- **mattpocock-skills:grilling** — if multi-turn conversation memory or query-result
+  caching (both deliberately deferred, section 6) become the next task; both reopen
+  real design questions (how history interacts with the existing global date-range
+  filter; cache-key/invalidation shape) worth stress-testing before building, the same
+  way tier-0/tier-3 were.
+- **mattpocock-skills:to-tickets** — if the domain-summary-lookup ticket
+  (`.scratch/domain-summary-lookup/issues/01-domain-summary-lookup-tab.md`, confirmed
+  independent, not yet built) or voice input (small, proven, independent - see section
+  6) get picked up; neither needs a fresh spec, just implementation.
 - **code-review** or **simplify** — `sync/engine.py` (20 near-identical per-table sync
-  functions) and `chatbot/catalog.py` (a growing list of near-identical `CatalogQuery`
-  entries) are both candidates for a table-driven refactor now that the pattern is
-  proven several times over. Deliberately not done mid-TDD-loop — refactoring is a
-  separate step per the TDD skill.
+  functions), `chatbot/catalog.py` (a growing list of near-identical `CatalogQuery`
+  entries), and now `chatbot/tools.py` (5 tier-3 tools and growing) are all candidates
+  for a table-driven refactor now that the pattern is proven several times over.
+  Deliberately not done mid-TDD-loop — refactoring is a separate step per the TDD skill.
 - **mattpocock-skills:domain-modeling** — if formalizing the workbook's domain
   vocabulary (a `CONTEXT.md` or ADR) makes sense now that the schema has been through
-  several real design fixes across both the sync and chatbot builds.
+  several real design fixes across the sync, chatbot, and tier-3 builds.
