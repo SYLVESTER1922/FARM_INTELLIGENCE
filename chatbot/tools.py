@@ -144,6 +144,72 @@ def q_weather(conn, domain: str | None = None, date_from=None, date_to=None) -> 
     }
 
 
+CROP_TYPES_SQL = """
+    SELECT DISTINCT crop
+    FROM plantings
+    WHERE 1=1{date_filter}
+    ORDER BY crop
+"""
+
+
+def q_crop_types(conn, domain: str | None = None, date_from=None, date_to=None) -> dict:
+    """Distinct crop types planted, optionally scoped to the selected date
+    range (by planting_date) - a listing, not an aggregate, complementing
+    q_crop_area_planted's total hectares. Same range-filtering pattern as
+    q_crop_area_planted; `domain` accepted but unused for the same reason."""
+    params = {}
+    date_filter = date_filter_sql("planting_date", date_from, date_to, params)
+    sql = CROP_TYPES_SQL.format(date_filter=date_filter)
+    rows = conn.execute(sql, params).fetchall()
+    crops = [r[0] for r in rows if r[0] is not None]
+    return {"crops": crops, "count": len(crops)}
+
+
+VALID_EXPENSE_DOMAINS = {"piggery", "poultry", "crops"}
+
+EXPENSES_TO_DATE_SQL = """
+    SELECT COALESCE(SUM(total_cost), 0) AS total
+    FROM expenses
+    WHERE date <= %(cutoff)s{domain_filter}
+"""
+
+_LATEST_EXPENSE_DATE_SQL = "SELECT MAX(date) FROM expenses"
+
+
+def _latest_expense_date(conn) -> datetime.date | None:
+    return conn.execute(_LATEST_EXPENSE_DATE_SQL).fetchone()[0]
+
+
+def q_expenses_to_date(conn, domain: str | None = None, date_from=None, date_to=None) -> dict:
+    """Cumulative total expenses up to and including date_to (the
+    currently-selected global filter's end date) or the latest real
+    expense date if none given - "to date" means everything up through a
+    cutoff, matching the dashboard's existing cumulative stat-card
+    treatment (Total Livestock Placed, Piglets Born), not a
+    date_from-bounded range. `date_from` is accepted for a uniform
+    tool-calling signature but unused - a cumulative total has no
+    meaningful start bound. `domain` is optional and validated against the
+    closed vocabulary before querying, same pattern as q_headcount's."""
+    if domain is not None and domain not in VALID_EXPENSE_DOMAINS:
+        raise InvalidToolArgument(
+            f"domain must be one of {sorted(VALID_EXPENSE_DOMAINS)}, got {domain!r}"
+        )
+
+    cutoff = date_to or _latest_expense_date(conn)
+    if cutoff is None:
+        return {"found": False}
+
+    params = {"cutoff": cutoff}
+    domain_filter = ""
+    if domain is not None:
+        domain_filter = " AND domain = %(domain)s"
+        params["domain"] = domain
+
+    sql = EXPENSES_TO_DATE_SQL.format(domain_filter=domain_filter)
+    total = conn.execute(sql, params).fetchone()[0]
+    return {"as_of": str(cutoff), "domain": domain or "all", "total_expenses": float(total)}
+
+
 TOOLS_SCHEMA = [
     {"type": "function", "function": {
         "name": "q_headcount",
@@ -177,12 +243,37 @@ TOOLS_SCHEMA = [
         ),
         "parameters": {"type": "object", "properties": {}},
     }},
+    {"type": "function", "function": {
+        "name": "q_crop_types",
+        "description": (
+            "Which crop types are planted (a list, not a total area). "
+            "Use for 'what crops do we have', 'what crops are we "
+            "growing', 'which crops are planted'."
+        ),
+        "parameters": {"type": "object", "properties": {}},
+    }},
+    {"type": "function", "function": {
+        "name": "q_expenses_to_date",
+        "description": (
+            "Cumulative total expenses to date (optionally for one "
+            "domain). Use for 'what's the expense amount to date', "
+            "'total expenses so far', 'how much have we spent'."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "domain": {
+                "type": "string", "enum": ["piggery", "poultry", "crops"],
+                "description": "Omit for the total across all domains.",
+            },
+        }},
+    }},
 ]
 
 TOOL_FUNC_MAP = {
     "q_headcount": q_headcount,
     "q_crop_area_planted": q_crop_area_planted,
     "q_weather": q_weather,
+    "q_crop_types": q_crop_types,
+    "q_expenses_to_date": q_expenses_to_date,
 }
 
 # Statically declared per tool, at registration time - same rule the
@@ -195,6 +286,8 @@ TOOL_DOMAINS = {
     "q_headcount": ["piggery", "poultry"],
     "q_crop_area_planted": ["crops"],
     "q_weather": [],
+    "q_crop_types": ["crops"],
+    "q_expenses_to_date": ["piggery", "poultry", "crops"],
 }
 
 
