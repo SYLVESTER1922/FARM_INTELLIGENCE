@@ -69,6 +69,96 @@ def active_headcount_asof(conn, cutoff, table, count_col):
     return conn.execute(sql, {"cutoff": cutoff}).fetchone()[0]
 
 
+DEATHS_IN_WINDOW_SQL = """
+    SELECT COALESCE(SUM(deaths), 0) AS total
+    FROM {table} WHERE date > %(start)s AND date <= %(end)s
+"""
+
+
+def deaths_in_window(conn, start, end, table):
+    """Deaths strictly after `start` up to and including `end` - shared by
+    the dashboard's Mortality Rate stat card (ui/queries.py) and the
+    chatbot's tier-3 mortality-rate tool (chatbot/tools.py), same
+    dependency-direction reason as active_headcount_asof above."""
+    sql = DEATHS_IN_WINDOW_SQL.format(table=table)
+    return conn.execute(sql, {"start": start, "end": end}).fetchone()[0]
+
+
+PIG_FCR_SQL = """
+    WITH feed AS (
+        SELECT batch_code, SUM(feed_kg) AS total_feed_kg
+        FROM pig_daily_log WHERE 1=1{date_filter} GROUP BY batch_code
+    ),
+    latest_count AS (
+        SELECT DISTINCT ON (batch_code) batch_code, closing_count
+        FROM pig_daily_log WHERE 1=1{date_filter} ORDER BY batch_code, date DESC
+    ),
+    latest_weight AS (
+        SELECT DISTINCT ON (batch_code) batch_code, avg_weight_kg
+        FROM pig_weights WHERE 1=1{date_filter} ORDER BY batch_code, date DESC
+    )
+    SELECT b.batch_code,
+           f.total_feed_kg,
+           (lw.avg_weight_kg - b.start_avg_kg) * lc.closing_count AS weight_gain_kg,
+           ROUND(f.total_feed_kg /
+                 NULLIF((lw.avg_weight_kg - b.start_avg_kg) * lc.closing_count, 0), 2
+           ) AS fcr
+    FROM pig_batches b
+    JOIN feed f ON f.batch_code = b.batch_code
+    JOIN latest_count lc ON lc.batch_code = b.batch_code
+    JOIN latest_weight lw ON lw.batch_code = b.batch_code
+    ORDER BY b.batch_code
+"""
+
+POULTRY_FCR_SQL = """
+    WITH feed AS (
+        SELECT batch_code, SUM(feed_kg) AS total_feed_kg
+        FROM poultry_daily_log WHERE 1=1{date_filter} GROUP BY batch_code
+    ),
+    latest_count AS (
+        SELECT DISTINCT ON (batch_code) batch_code, closing_birds
+        FROM poultry_daily_log WHERE 1=1{date_filter} ORDER BY batch_code, date DESC
+    ),
+    latest_weight AS (
+        SELECT DISTINCT ON (batch_code) batch_code, avg_weight_g
+        FROM poultry_weights WHERE 1=1{date_filter} ORDER BY batch_code, date DESC
+    )
+    SELECT b.batch_code,
+           f.total_feed_kg,
+           (lw.avg_weight_g / 1000.0) * lc.closing_birds AS weight_gain_kg,
+           ROUND(f.total_feed_kg /
+                 NULLIF((lw.avg_weight_g / 1000.0) * lc.closing_birds, 0), 2
+           ) AS fcr
+    FROM poultry_batches b
+    JOIN feed f ON f.batch_code = b.batch_code
+    JOIN latest_count lc ON lc.batch_code = b.batch_code
+    JOIN latest_weight lw ON lw.batch_code = b.batch_code
+    ORDER BY b.batch_code
+"""
+
+
+def fcr_by_batch(conn, date_from=None, date_to=None):
+    """[{'batch_code', 'domain', 'fcr'}, ...] across both pigs and poultry.
+    When a date range is given, feed consumed and the latest weight/count
+    samples are all bounded to that range - the batch's starting weight
+    stays fixed (a batch-level constant, not a flow value), so FCR for a
+    range that starts partway through a batch's life is an approximation,
+    not an exact "gain within this window" figure. Shared by the
+    dashboard's FCR chart (ui/queries.py) and the chatbot's tier-3 FCR
+    ranking tool (chatbot/tools.py), same dependency-direction reason as
+    active_headcount_asof above."""
+    params = {}
+    date_filter = date_filter_sql("date", date_from, date_to, params)
+    pig_rows = conn.execute(PIG_FCR_SQL.format(date_filter=date_filter), params).fetchall()
+    poultry_rows = conn.execute(POULTRY_FCR_SQL.format(date_filter=date_filter), params).fetchall()
+    return (
+        [{"batch_code": r[0], "domain": "piggery", "fcr": r[3]}
+         for r in pig_rows if r[3] is not None] +
+        [{"batch_code": r[0], "domain": "poultry", "fcr": r[3]}
+         for r in poultry_rows if r[3] is not None]
+    )
+
+
 FEED_COST_SPLIT_SQL = """
     WITH domain_usage AS (
         SELECT date, 'piggery' AS domain, feed_type, feed_kg FROM pig_daily_log

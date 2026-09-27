@@ -24,7 +24,7 @@ import datetime
 import json
 from dataclasses import dataclass, field
 
-from chatbot.catalog import active_headcount_asof, date_filter_sql
+from chatbot.catalog import active_headcount_asof, date_filter_sql, deaths_in_window, fcr_by_batch
 
 VALID_HEADCOUNT_DOMAINS = {"piggery", "poultry"}
 
@@ -210,13 +210,256 @@ def q_expenses_to_date(conn, domain: str | None = None, date_from=None, date_to=
     return {"as_of": str(cutoff), "domain": domain or "all", "total_expenses": float(total)}
 
 
+def q_expenses_by_domain(conn, date_from=None, date_to=None) -> dict:
+    """A breakdown of cumulative expenses-to-date by domain, for
+    comparison questions ("compare piggery and poultry costs") that
+    q_expenses_to_date's single-total-or-one-domain shape can't answer -
+    tier-3 only calls one tool once per turn (see resolve_tool_call), so a
+    real comparison needs a tool that returns multiple domains' figures
+    together, not two separate tool calls. Reuses q_expenses_to_date's
+    same per-domain query three times, not a new SQL pattern."""
+    cutoff = date_to or _latest_expense_date(conn)
+    return {
+        "as_of": str(cutoff) if cutoff else None,
+        "piggery": q_expenses_to_date(conn, domain="piggery", date_to=date_to)["total_expenses"],
+        "poultry": q_expenses_to_date(conn, domain="poultry", date_to=date_to)["total_expenses"],
+        "crops": q_expenses_to_date(conn, domain="crops", date_to=date_to)["total_expenses"],
+    }
+
+
+VALID_ANIMAL_DOMAINS = {"piggery", "poultry"}
+
+
+def q_cost_per_animal(conn, domain: str | None = None, date_from=None, date_to=None) -> dict:
+    """Cost per animal = total domain expenses to date / current active
+    headcount for that domain - a real division, always computed here in
+    Python from two already-correct deterministic queries, never left for
+    the LLM to claim it computed (the real bug this tool fixes: the
+    narrator previously said "the cost per pig is calculated based on
+    total expenses of X" without ever actually dividing by headcount).
+    `domain` is required in the tool schema (declared below), but
+    validated explicitly here too rather than relying on a bare TypeError
+    for a missing argument - a clearer, more intentional failure mode."""
+    if domain is None or domain not in VALID_ANIMAL_DOMAINS:
+        raise InvalidToolArgument(
+            f"domain must be one of {sorted(VALID_ANIMAL_DOMAINS)}, got {domain!r}"
+        )
+
+    table = "pig_daily_log" if domain == "piggery" else "poultry_daily_log"
+    count_col = "closing_count" if domain == "piggery" else "closing_birds"
+    cutoff = date_to or _latest_headcount_date(conn)
+    headcount = active_headcount_asof(conn, cutoff, table, count_col)
+    total_expenses = q_expenses_to_date(conn, domain=domain, date_to=date_to)["total_expenses"]
+
+    if not headcount:
+        return {"as_of": str(cutoff), "domain": domain, "headcount": 0,
+                "total_expenses": total_expenses, "cost_per_animal": None}
+
+    return {
+        "as_of": str(cutoff), "domain": domain, "headcount": headcount,
+        "total_expenses": total_expenses,
+        "cost_per_animal": round(total_expenses / headcount, 2),
+    }
+
+
+_LATEST_FINANCIAL_DATE_SQL = """
+    SELECT MAX(d) FROM (
+        SELECT date AS d FROM expenses
+        UNION ALL SELECT date FROM revenue
+    ) all_dates
+"""
+
+
+def _latest_financial_date(conn) -> datetime.date | None:
+    return conn.execute(_LATEST_FINANCIAL_DATE_SQL).fetchone()[0]
+
+
+REVENUE_TO_DATE_SQL = """
+    SELECT COALESCE(SUM(total_amount), 0) AS total
+    FROM revenue
+    WHERE date <= %(cutoff)s{domain_filter}
+"""
+
+
+def q_profit(conn, domain: str | None = None, date_from=None, date_to=None) -> dict:
+    """Profit = revenue to date - expenses to date, both cumulative up to
+    the same cutoff (matching q_expenses_to_date's "to date" semantics,
+    not a date_from-bounded range). Reuses q_expenses_to_date's existing
+    total and one new, equally simple revenue total - a real subtraction
+    always computed here in Python, never left for the LLM. The
+    dashboard's Expenses vs Revenue chart shows both series as separate
+    lines but never computes their difference - this tool closes that
+    gap without a new query shape, not because the chart was missing
+    data."""
+    if domain is not None and domain not in VALID_EXPENSE_DOMAINS:
+        raise InvalidToolArgument(
+            f"domain must be one of {sorted(VALID_EXPENSE_DOMAINS)}, got {domain!r}"
+        )
+
+    cutoff = date_to or _latest_financial_date(conn)
+    if cutoff is None:
+        return {"found": False}
+
+    expenses = q_expenses_to_date(conn, domain=domain, date_to=cutoff)["total_expenses"]
+
+    params = {"cutoff": cutoff}
+    domain_filter = ""
+    if domain is not None:
+        domain_filter = " AND domain = %(domain)s"
+        params["domain"] = domain
+    revenue_sql = REVENUE_TO_DATE_SQL.format(domain_filter=domain_filter)
+    revenue = float(conn.execute(revenue_sql, params).fetchone()[0])
+
+    return {
+        "as_of": str(cutoff), "domain": domain or "all",
+        "total_revenue": revenue, "total_expenses": expenses,
+        "profit": round(revenue - expenses, 2),
+    }
+
+
+_PERIOD_DAYS = {"last_7_days": 7, "last_30_days": 30, "last_90_days": 90}
+VALID_MORTALITY_DOMAINS = {"piggery", "poultry"}
+
+
+def q_mortality_rate(conn, domain: str | None = None, period: str | None = None,
+                      date_from=None, date_to=None) -> dict:
+    """Death count and mortality rate (%), farm-wide (piggery + poultry
+    combined) if domain is omitted, or for one domain - reusing the exact
+    methodology already computed for the dashboard's Mortality Rate stat
+    card (deaths_in_window / active_headcount_asof, both relocated to
+    chatbot/catalog.py so this tool and the dashboard share one source of
+    truth), just exposed as a chat-answerable tool. `period` is a
+    symbolic relative-time enum ("last_7_days" etc.), not an LLM-computed
+    date - the LLM must never compute "today minus 7 days" itself (it has
+    no way to know "today" here means the latest real data date, not the
+    calendar date); this tool computes the real window boundary instead,
+    matching Savanna QSR Intelligence's own proven q_revenue_by_period
+    pattern (verified by reading its real code) rather than trusting an
+    LLM-supplied date. `period` takes precedence over date_from/date_to
+    when both are somehow given, since a period named in the question
+    itself is more specific than whatever the global filter happens to be
+    set to."""
+    if domain is not None and domain not in VALID_MORTALITY_DOMAINS:
+        raise InvalidToolArgument(
+            f"domain must be one of {sorted(VALID_MORTALITY_DOMAINS)}, got {domain!r}"
+        )
+    if period is not None and period not in _PERIOD_DAYS:
+        raise InvalidToolArgument(
+            f"period must be one of {sorted(_PERIOD_DAYS)}, got {period!r}"
+        )
+
+    window_end = date_to or _latest_headcount_date(conn)
+    if period is not None:
+        window_start = window_end - datetime.timedelta(days=_PERIOD_DAYS[period])
+    else:
+        window_start = date_from or (window_end - datetime.timedelta(days=30))
+
+    domains = [domain] if domain else ["piggery", "poultry"]
+    deaths = 0
+    headcount = 0
+    for d in domains:
+        table = "pig_daily_log" if d == "piggery" else "poultry_daily_log"
+        count_col = "closing_count" if d == "piggery" else "closing_birds"
+        deaths += deaths_in_window(conn, window_start, window_end, table)
+        headcount += active_headcount_asof(conn, window_end, table, count_col)
+
+    return {
+        "window_start": str(window_start), "window_end": str(window_end),
+        "domain": domain or "farm-wide (piggery + poultry)",
+        "deaths": deaths, "headcount": headcount,
+        "mortality_rate_pct": round(deaths / headcount * 100, 2) if headcount else None,
+    }
+
+
+VALID_FCR_DOMAINS = {"piggery", "poultry"}
+
+
+def q_fcr_ranking(conn, domain: str | None = None, date_from=None, date_to=None) -> dict:
+    """Ranks batches by feed conversion ratio (FCR = feed consumed /
+    liveweight gain; lower is better/more efficient) - reusing the exact
+    methodology and approximation already computed for the dashboard's
+    FCR chart (fcr_by_batch, relocated to chatbot/catalog.py so this tool
+    and the dashboard share one source of truth), just exposed as a
+    chat-answerable tool. Closes a real gap found via a QA pass: "which
+    batch has the worst feed conversion ratio" was previously mismatched
+    at tier-1 to poultry_mortality_spike (a different metric entirely) -
+    see matcher.py's Jaccard-scoring fix for the routing half of that fix;
+    this tool is the "actually answer it" half."""
+    if domain is not None and domain not in VALID_FCR_DOMAINS:
+        raise InvalidToolArgument(
+            f"domain must be one of {sorted(VALID_FCR_DOMAINS)}, got {domain!r}"
+        )
+
+    rows = fcr_by_batch(conn, date_from=date_from, date_to=date_to)
+    if domain is not None:
+        rows = [r for r in rows if r["domain"] == domain]
+    if not rows:
+        return {"found": False}
+
+    ranked = sorted(rows, key=lambda r: float(r["fcr"]))
+    return {
+        "found": True,
+        "best_batch": ranked[0]["batch_code"], "best_fcr": float(ranked[0]["fcr"]),
+        "worst_batch": ranked[-1]["batch_code"], "worst_fcr": float(ranked[-1]["fcr"]),
+        "all_fcr_by_batch": {r["batch_code"]: float(r["fcr"]) for r in ranked},
+    }
+
+
+EXPENSE_BY_CATEGORY_SQL = """
+    SELECT category, SUM(total_cost) AS total
+    FROM expenses
+    WHERE 1=1{date_filter}{domain_filter}
+    GROUP BY category
+    ORDER BY total DESC
+"""
+
+
+def q_expense_by_category(conn, domain: str | None = None, date_from=None, date_to=None) -> dict:
+    """Expense breakdown by CATEGORY (Feed, Labour, Vet, etc.) - a
+    different dimension from q_expenses_by_domain's piggery/poultry/crops
+    breakdown, never interchangeable with it. Closes a real bug found via
+    a QA pass: "what's our biggest expense category" was previously
+    answered using the domain breakdown, calling a domain (e.g.
+    "piggery") a category. `domain` optionally narrows the category
+    breakdown to one domain, but is not itself a category - both this
+    tool's own description and q_expenses_by_domain's were tightened so
+    the LLM doesn't conflate the two dimensions again."""
+    if domain is not None and domain not in VALID_EXPENSE_DOMAINS:
+        raise InvalidToolArgument(
+            f"domain must be one of {sorted(VALID_EXPENSE_DOMAINS)}, got {domain!r}"
+        )
+
+    params = {}
+    date_filter = date_filter_sql("date", date_from, date_to, params)
+    domain_filter = ""
+    if domain is not None:
+        domain_filter = " AND domain = %(domain)s"
+        params["domain"] = domain
+
+    sql = EXPENSE_BY_CATEGORY_SQL.format(date_filter=date_filter, domain_filter=domain_filter)
+    rows = conn.execute(sql, params).fetchall()
+    if not rows:
+        return {"found": False}
+
+    breakdown = {r[0]: float(r[1]) for r in rows}
+    biggest_category, biggest_amount = max(breakdown.items(), key=lambda kv: kv[1])
+    return {
+        "found": True, "breakdown_by_category": breakdown,
+        "biggest_category": biggest_category, "biggest_amount": biggest_amount,
+    }
+
+
 TOOLS_SCHEMA = [
     {"type": "function", "function": {
         "name": "q_headcount",
         "description": (
             "Current active headcount of pigs and/or poultry. Use for "
             "'how many pigs do we have', 'how many chickens/poultry do we "
-            "have', 'current headcount', 'how many animals do we have'."
+            "have', 'current headcount', 'how many animals do we have'. "
+            "For a COMBINED question asking about both pigs and poultry "
+            "together ('how many pigs and chickens combined', 'total "
+            "animals'), OMIT domain entirely to get both totals - do not "
+            "guess a single domain when the question asks about both."
         ),
         "parameters": {"type": "object", "properties": {
             "domain": {
@@ -255,10 +498,13 @@ TOOLS_SCHEMA = [
     {"type": "function", "function": {
         "name": "q_expenses_to_date",
         "description": (
-            "Cumulative total expenses to date (optionally for one "
-            "domain) - money the farm has already spent/paid. Use for "
+            "A SINGLE cumulative total expenses figure to date - either "
+            "the farm-wide total, or one domain's total if asked. Use for "
             "'what's the expense amount to date', 'total expenses so "
-            "far', 'how much have we spent'. Do NOT use for questions "
+            "far', 'how much have we spent'. NOT for comparing multiple "
+            "domains against each other ('compare piggery and poultry "
+            "costs') - use q_expenses_by_domain for that, since this tool "
+            "only ever returns one number. Do NOT use for questions "
             "about money the farm owes to others / accounts payable "
             "('are we owing anyone', 'do we owe our suppliers', 'what "
             "do we owe') - that is a different, untracked concept; do "
@@ -271,6 +517,102 @@ TOOLS_SCHEMA = [
             },
         }},
     }},
+    {"type": "function", "function": {
+        "name": "q_expenses_by_domain",
+        "description": (
+            "A BREAKDOWN of total expenses to date by DOMAIN (piggery, "
+            "poultry, crops) - NOT by category. Use for 'compare piggery "
+            "and poultry costs', 'expense breakdown by domain', 'which "
+            "domain costs more'. Domain and category are different "
+            "dimensions - do NOT use this for a category question like "
+            "'biggest expense category' (Feed/Labour/Vet); use "
+            "q_expense_by_category for that instead."
+        ),
+        "parameters": {"type": "object", "properties": {}},
+    }},
+    {"type": "function", "function": {
+        "name": "q_expense_by_category",
+        "description": (
+            "A breakdown of total expenses by CATEGORY (Feed, Labour, "
+            "Vet, etc.) - NOT by domain. Use for 'what's our biggest "
+            "expense category', 'expense breakdown by category', "
+            "'how much do we spend on feed vs labour'. Category and "
+            "domain are different dimensions - do NOT use this for a "
+            "domain comparison like 'compare piggery and poultry costs'; "
+            "use q_expenses_by_domain for that instead."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "domain": {
+                "type": "string", "enum": ["piggery", "poultry", "crops"],
+                "description": "Optional - narrow the category breakdown to one domain.",
+            },
+        }},
+    }},
+    {"type": "function", "function": {
+        "name": "q_fcr_ranking",
+        "description": (
+            "Ranks batches by feed conversion ratio (FCR) - a specific "
+            "metric (feed used / weight gain), NOT mortality or any "
+            "other metric. Use for 'which batch has the worst/best feed "
+            "conversion ratio', 'FCR by batch', 'most efficient batch'."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "domain": {
+                "type": "string", "enum": ["piggery", "poultry"],
+                "description": "Omit to rank across both domains together.",
+            },
+        }},
+    }},
+    {"type": "function", "function": {
+        "name": "q_cost_per_animal",
+        "description": (
+            "Cost per pig or per bird - total domain expenses divided by "
+            "current headcount for that domain. Use for 'what's the cost "
+            "per pig', 'cost per bird', 'cost per chicken'."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "domain": {
+                "type": "string", "enum": ["piggery", "poultry"],
+                "description": "Required - which domain's cost-per-animal to compute.",
+            },
+        }, "required": ["domain"]},
+    }},
+    {"type": "function", "function": {
+        "name": "q_profit",
+        "description": (
+            "Profit (revenue minus expenses) to date, farm-wide or for "
+            "one domain. Use for 'is the piggery profitable', 'what's "
+            "our profit', 'are we making money'."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "domain": {
+                "type": "string", "enum": ["piggery", "poultry", "crops"],
+                "description": "Omit for the farm-wide total.",
+            },
+        }},
+    }},
+    {"type": "function", "function": {
+        "name": "q_mortality_rate",
+        "description": (
+            "Death count and mortality rate (%), farm-wide (piggery + "
+            "poultry combined) or for one domain, over a period. Use for "
+            "'mortality rate for the whole farm', 'how many chickens/pigs "
+            "died last week/month', 'death count this month'."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "domain": {
+                "type": "string", "enum": ["piggery", "poultry"],
+                "description": "Omit for farm-wide (both domains combined).",
+            },
+            "period": {
+                "type": "string", "enum": ["last_7_days", "last_30_days", "last_90_days"],
+                "description": ("A relative period named in the question (e.g. "
+                                 "'last week' -> last_7_days). Omit if the question "
+                                 "doesn't name one - the global date filter or a "
+                                 "30-day default applies instead."),
+            },
+        }},
+    }},
 ]
 
 TOOL_FUNC_MAP = {
@@ -279,6 +621,12 @@ TOOL_FUNC_MAP = {
     "q_weather": q_weather,
     "q_crop_types": q_crop_types,
     "q_expenses_to_date": q_expenses_to_date,
+    "q_expenses_by_domain": q_expenses_by_domain,
+    "q_cost_per_animal": q_cost_per_animal,
+    "q_profit": q_profit,
+    "q_mortality_rate": q_mortality_rate,
+    "q_expense_by_category": q_expense_by_category,
+    "q_fcr_ranking": q_fcr_ranking,
 }
 
 # Statically declared per tool, at registration time - same rule the
@@ -293,6 +641,12 @@ TOOL_DOMAINS = {
     "q_weather": [],
     "q_crop_types": ["crops"],
     "q_expenses_to_date": ["piggery", "poultry", "crops"],
+    "q_expenses_by_domain": ["piggery", "poultry", "crops"],
+    "q_cost_per_animal": ["piggery", "poultry"],
+    "q_profit": ["piggery", "poultry", "crops"],
+    "q_mortality_rate": ["piggery", "poultry"],
+    "q_expense_by_category": ["piggery", "poultry", "crops"],
+    "q_fcr_ranking": ["piggery", "poultry"],
 }
 
 
@@ -314,7 +668,14 @@ def resolve_tool_call(question: str, openai_client) -> ToolCallResult:
     directly, since the real model empirically won't misbehave on demand
     for this branch either. Only the first tool call is used - tier-3
     tools are independent lookups, not composed in one turn, matching this
-    project's one-shot simplicity elsewhere."""
+    project's one-shot simplicity elsewhere.
+
+    No system prompt - a genuinely subject-less question ("how's it
+    doing?", "how many?") is caught deterministically before this
+    function is ever called (see chatbot/ambiguity.py); an LLM-prompted
+    version of that check was tried first and found unreliable (it
+    over-applied to cases explicitly excluded in its own prompt), so this
+    function stays exactly as simple as it was before that attempt."""
     resp = openai_client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[{"role": "user", "content": question}],

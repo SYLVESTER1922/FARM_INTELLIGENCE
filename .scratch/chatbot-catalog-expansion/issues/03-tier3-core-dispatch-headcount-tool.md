@@ -54,3 +54,13 @@ query is a snapshot, not a range aggregate, documented in `chatbot/tools.py`.
       selected for an unrelated question - 2 tests).
 - [x] All existing tier-1/tier-2 tests and behavior remain unchanged (86 tests passing,
       up from 76; zero regressions).
+
+**Post-deploy fix (found via a pre-deploy QA pass on a later change, applied here since
+it's this ticket's tool)**: "How many pigs and chickens do we have combined?" got
+`domain: piggery` from tool-selection - wrong, since the question explicitly asks for
+both - and the narrator then fabricated "there are no chickens" from that incomplete
+result (509 real poultry existed). Fixed by adding explicit "omit domain for combined
+questions" guidance to the tool's description. Regression tests added
+(`test_combined_question_omits_domain_not_guesses_one`,
+`test_combined_headcount_answer_includes_both_domains`); verified stable and correct
+against real production data afterward (12 pigs + 509 poultry = 521, exact match).

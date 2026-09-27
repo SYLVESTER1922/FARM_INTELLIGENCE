@@ -15,6 +15,7 @@ from chatbot.data_dictionary import explain_gap
 from chatbot.fallback import llm_extract_intent, validate_llm_intent
 from chatbot.greetings import GREETING_RESPONSE, HELP_RESPONSE, match_tier0
 from chatbot.matcher import match
+from chatbot.ambiguity import has_no_real_subject
 from chatbot.tools import (
     TOOL_DOMAINS,
     TOOL_FUNC_MAP,
@@ -49,6 +50,17 @@ SCOPED_OUT_TEMPLATE = (
     "The {module} module is turned off for this farm - turn it on in the "
     "farm profile to ask about that."
 )
+# A fixed, hand-written response, never model-authored freeform text -
+# consistent with this engine's "the LLM never answers freely" principle.
+# A real bug found via a QA pass: genuinely unspecified questions ("how's
+# it doing?", "how many?") were getting a confidently guessed answer
+# (weather, headcount) instead of a clarifying question - the same shape
+# as this project's worst bugs (a confident answer on ambiguous input).
+CLARIFICATION_NEEDED_TEMPLATE = (
+    "Could you clarify what you'd like to know? For example, a specific "
+    "domain (piggery, poultry, crops), a metric (headcount, mortality, "
+    "feed cost, expenses), or a time period."
+)
 
 MODULE_ACTIVE_COLUMNS = {
     "piggery": "module_piggery_active",
@@ -71,7 +83,7 @@ def _openai_client():
 @dataclass
 class Answer:
     text: str
-    intent_source: str          # "deterministic" | "llm_fallback" | "tool_fallback" | "tier0_greeting" | "tier0_help" | "unresolved"
+    intent_source: str          # "deterministic" | "llm_fallback" | "tool_fallback" | "tier0_greeting" | "tier0_help" | "needs_clarification" | "unresolved"
     query_id: str | None = None
     failure_reason: str | None = None
     scoped_out_reason: str | None = None
@@ -123,10 +135,24 @@ def answer_question(question: str, farm_code: str, dsn: str,
         return answer
 
     if result.query_id is None:
+        # A genuinely subject-less question ("how's it doing?", "how
+        # many?") is caught deterministically here, before ever reaching
+        # tier-3's LLM tool-calling - a real bug found via a QA pass
+        # showed the LLM would otherwise confidently guess a default tool
+        # (weather, headcount) for exactly these bare questions. See
+        # chatbot/ambiguity.py for why this check is deterministic, not
+        # LLM-prompted.
+        if has_no_real_subject(question):
+            answer = Answer(text=CLARIFICATION_NEEDED_TEMPLATE, intent_source="needs_clarification")
+            _log(conn, farm_code, question, answer)
+            conn.close()
+            return answer
+
         # tier 1 and tier 2 both missed with a true no_match/ambiguous
         # (missing_parameter already returned above) - try tier-3's
         # tool-calling fallback before giving up.
         tool_result = resolve_tool_call(question, _openai_client())
+
         if tool_result.tool_name is not None:
             answer = _run_tool_call(conn, farm_code, question, tool_result, date_from, date_to)
             if answer is not None:
@@ -250,9 +276,19 @@ def _phrase(question: str, computed: list) -> str:
         "Answer the user's question in one short, natural sentence or two, "
         "using ONLY the computed data below. Every field in the data - "
         "identifiers, labels, and numbers alike - is there because it's part "
-        "of the answer; mention all of them by their exact value, do not "
-        "round or recompute any number, and do not omit or invent anything "
-        "not present in the data.\n\n"
+        "of the answer; mention EVERY one of them by its exact value (never "
+        "silently drop a field to keep the sentence short), do not round or "
+        "recompute any number, and do not omit or invent anything not "
+        "present in the data. This includes conclusions, causation, or "
+        "explanations the data doesn't directly state - e.g. if asked "
+        "whether X affected Y, only report whatever data you were given; "
+        "never claim or suggest an effect, a cause, or a correlation "
+        "between separate facts unless the data itself already states that "
+        "link. Separately, if the QUESTION asks about a second topic this "
+        "data doesn't cover at all (a topic with no field for it anywhere "
+        "in the data below), say nothing about that other topic rather "
+        "than guessing it - this is about a topic missing entirely, never "
+        "a reason to omit a field that IS present in the data.\n\n"
         f"Question: {question}\n"
         f"Computed data (JSON): {json.dumps(computed, default=str)}"
     )

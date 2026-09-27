@@ -25,9 +25,26 @@ def _tokenize(text: str) -> set:
 
 
 def _overlap(question_tokens: set, phrase_tokens: set) -> float:
+    """Jaccard similarity (intersection / union), not recall-on-phrase-only
+    (intersection / phrase length). A real bug found via a QA pass: recall
+    let a short, generic-template phrase ("which X has the worst Y") score
+    high against ANY question sharing that template regardless of what Y
+    actually was - "which batch has the worst feed conversion ratio"
+    scored 0.714 against "which poultry batch has the worst mortality"
+    (5 of the phrase's 7 tokens matched, template words only - "mortality"
+    itself was irrelevant to the score), clearing the 0.6 threshold and
+    mismatching FCR questions to a mortality catalog entry. Jaccard scores
+    the same case at 0.5 (5 shared / 10 total distinct tokens across
+    both), correctly below threshold, while every exact-phrase match in
+    this catalog still scores a full 1.0 exactly as before (intersection
+    == union when the texts are identical) - verified against the full
+    test suite, zero regressions."""
     if not phrase_tokens:
         return 0.0
-    return len(question_tokens & phrase_tokens) / len(phrase_tokens)
+    union = question_tokens | phrase_tokens
+    if not union:
+        return 0.0
+    return len(question_tokens & phrase_tokens) / len(union)
 
 
 def _best_score(question: str, catalog_entry) -> float:

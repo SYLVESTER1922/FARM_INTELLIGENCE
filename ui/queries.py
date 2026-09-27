@@ -22,6 +22,8 @@ from chatbot.catalog import (
     POULTRY_MORTALITY_SPIKE_SQL,
     active_headcount_asof,
     date_filter_sql,
+    deaths_in_window,
+    fcr_by_batch,
 )
 
 FEED_COST_BY_DOMAIN_SQL = """
@@ -65,58 +67,6 @@ MONTHLY_HEADCOUNT_SQL = """
     ) latest_per_batch_per_month
     GROUP BY month
     ORDER BY month
-"""
-
-PIG_FCR_SQL = """
-    WITH feed AS (
-        SELECT batch_code, SUM(feed_kg) AS total_feed_kg
-        FROM pig_daily_log WHERE 1=1{date_filter} GROUP BY batch_code
-    ),
-    latest_count AS (
-        SELECT DISTINCT ON (batch_code) batch_code, closing_count
-        FROM pig_daily_log WHERE 1=1{date_filter} ORDER BY batch_code, date DESC
-    ),
-    latest_weight AS (
-        SELECT DISTINCT ON (batch_code) batch_code, avg_weight_kg
-        FROM pig_weights WHERE 1=1{date_filter} ORDER BY batch_code, date DESC
-    )
-    SELECT b.batch_code,
-           f.total_feed_kg,
-           (lw.avg_weight_kg - b.start_avg_kg) * lc.closing_count AS weight_gain_kg,
-           ROUND(f.total_feed_kg /
-                 NULLIF((lw.avg_weight_kg - b.start_avg_kg) * lc.closing_count, 0), 2
-           ) AS fcr
-    FROM pig_batches b
-    JOIN feed f ON f.batch_code = b.batch_code
-    JOIN latest_count lc ON lc.batch_code = b.batch_code
-    JOIN latest_weight lw ON lw.batch_code = b.batch_code
-    ORDER BY b.batch_code
-"""
-
-POULTRY_FCR_SQL = """
-    WITH feed AS (
-        SELECT batch_code, SUM(feed_kg) AS total_feed_kg
-        FROM poultry_daily_log WHERE 1=1{date_filter} GROUP BY batch_code
-    ),
-    latest_count AS (
-        SELECT DISTINCT ON (batch_code) batch_code, closing_birds
-        FROM poultry_daily_log WHERE 1=1{date_filter} ORDER BY batch_code, date DESC
-    ),
-    latest_weight AS (
-        SELECT DISTINCT ON (batch_code) batch_code, avg_weight_g
-        FROM poultry_weights WHERE 1=1{date_filter} ORDER BY batch_code, date DESC
-    )
-    SELECT b.batch_code,
-           f.total_feed_kg,
-           (lw.avg_weight_g / 1000.0) * lc.closing_birds AS weight_gain_kg,
-           ROUND(f.total_feed_kg /
-                 NULLIF((lw.avg_weight_g / 1000.0) * lc.closing_birds, 0), 2
-           ) AS fcr
-    FROM poultry_batches b
-    JOIN feed f ON f.batch_code = b.batch_code
-    JOIN latest_count lc ON lc.batch_code = b.batch_code
-    JOIN latest_weight lw ON lw.batch_code = b.batch_code
-    ORDER BY b.batch_code
 """
 
 EXPENSES_BY_MONTH_SQL = """
@@ -172,22 +122,7 @@ def fetch_headcount_by_month(conn, date_from=None, date_to=None):
 
 
 def fetch_fcr_by_batch(conn, date_from=None, date_to=None):
-    """[{'batch_code', 'domain', 'fcr'}, ...] across both pigs and poultry.
-    When a date range is given, feed consumed and the latest weight/count
-    samples are all bounded to that range - the batch's starting weight
-    stays fixed (a batch-level constant, not a flow value), so FCR for a
-    range that starts partway through a batch's life is an approximation,
-    not an exact "gain within this window" figure."""
-    params = {}
-    date_filter = date_filter_sql("date", date_from, date_to, params)
-    pig = _rows(conn, PIG_FCR_SQL.format(date_filter=date_filter), params)
-    poultry = _rows(conn, POULTRY_FCR_SQL.format(date_filter=date_filter), params)
-    return (
-        [{"batch_code": r["batch_code"], "domain": "piggery", "fcr": r["fcr"]}
-         for r in pig if r["fcr"] is not None] +
-        [{"batch_code": r["batch_code"], "domain": "poultry", "fcr": r["fcr"]}
-         for r in poultry if r["fcr"] is not None]
-    )
+    return fcr_by_batch(conn, date_from=date_from, date_to=date_to)
 
 
 def fetch_expenses_vs_revenue(conn, date_from=None, date_to=None):
@@ -312,11 +247,6 @@ EARLIEST_FARROW_SQL = """
     SELECT MIN(farrow_date) AS total FROM breeding_farrowing WHERE farrow_date IS NOT NULL
 """
 
-DEATHS_IN_WINDOW_SQL = """
-    SELECT COALESCE(SUM(deaths), 0) AS total
-    FROM {table} WHERE date > %(start)s AND date <= %(end)s
-"""
-
 EXPENSE_BREAKDOWN_SQL = """
     SELECT category, SUM(total_cost) AS total
     FROM expenses GROUP BY category ORDER BY total DESC
@@ -394,16 +324,12 @@ def fetch_dashboard_stats(conn, date_from=None, date_to=None):
         born_caption = f"Since {earliest_farrow}"
 
     deaths_window = (
-        _scalar(conn, DEATHS_IN_WINDOW_SQL.format(table="pig_daily_log"),
-                {"start": window_start, "end": window_end}) +
-        _scalar(conn, DEATHS_IN_WINDOW_SQL.format(table="poultry_daily_log"),
-                {"start": window_start, "end": window_end})
+        deaths_in_window(conn, window_start, window_end, "pig_daily_log") +
+        deaths_in_window(conn, window_start, window_end, "poultry_daily_log")
     )
     deaths_prior_window = (
-        _scalar(conn, DEATHS_IN_WINDOW_SQL.format(table="pig_daily_log"),
-                {"start": prior_window_start, "end": prior_window_end}) +
-        _scalar(conn, DEATHS_IN_WINDOW_SQL.format(table="poultry_daily_log"),
-                {"start": prior_window_start, "end": prior_window_end})
+        deaths_in_window(conn, prior_window_start, prior_window_end, "pig_daily_log") +
+        deaths_in_window(conn, prior_window_start, prior_window_end, "poultry_daily_log")
     )
     base_now = _sum(_active_headcount_asof(conn, window_end))
     base_prior = _sum(_active_headcount_asof(conn, prior_window_end))

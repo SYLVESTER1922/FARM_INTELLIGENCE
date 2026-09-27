@@ -181,3 +181,41 @@ def test_resolve_tool_call_picks_no_tool_for_unrelated_question():
     client = openai.OpenAI()
     result = resolve_tool_call("what's the capital of France", client)
     assert result.tool_name is None
+
+
+# ---------------------------------------------------------------------------
+# Regression: a real bug found via a pre-deploy QA pass. "How many pigs
+# and chickens do we have combined?" got domain="piggery" from
+# tool-selection (should have omitted domain for a combined question),
+# and the narrator then fabricated "there are no chickens" from that
+# incomplete result - 509 real poultry existed. Fixed via the tool
+# description's explicit "omit for combined questions" guidance.
+# ---------------------------------------------------------------------------
+
+def test_combined_question_omits_domain_not_guesses_one():
+    client = openai.OpenAI()
+    for question in [
+        "How many pigs and chickens do we have combined?",
+        "how many pigs and chickens do we have combined?",
+        "How many animals do we have in total?",
+    ]:
+        result = resolve_tool_call(question, client)
+        assert result.tool_name == "q_headcount", question
+        assert result.arguments.get("domain") is None, (question, result.arguments)
+
+
+def test_combined_headcount_answer_includes_both_domains(tmp_path, db_conn, test_dsn):
+    _seed(tmp_path, test_dsn)
+
+    answer = answer_question(
+        "How many pigs and chickens do we have combined?",
+        farm_code="NIS-001", dsn=test_dsn,
+    )
+
+    assert answer.tool_name == "q_headcount"
+    # 23 pigs (24 - 1 death) + 495 poultry (500 - 5 deaths) = 518 - both
+    # real figures must appear, not a false "no chickens" claim
+    assert "23" in answer.text
+    assert "495" in answer.text
+    assert "no chicken" not in answer.text.lower()
+    assert "no poultry" not in answer.text.lower()
