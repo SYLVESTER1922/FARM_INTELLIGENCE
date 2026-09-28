@@ -23,12 +23,19 @@ harvest yield efficiency, breeding performance, feed stock, weight/growth tracki
 market/off-take readiness, health/vet cost trends, revenue breakdown) — landing tier-3
 at **19 tools total**, a data dictionary for honest refusals, a deterministic (not
 LLM-prompted) fix for confidently-guessed answers on subject-less questions, and a real
-routing-precision fix to the tier-1 matcher itself. See section 6. Before that, the data
-source went fully live: a real Google Sheet now feeds Supabase on a lazy
-poll-on-request cycle (no more manual `.xlsx` re-sync), and a global date-range filter
-reaches every dashboard page and the chat's inject-and-narrate queries — both modeled on
-the sibling Savanna QSR Intelligence product's actual architecture (read directly from
-its repo, not assumed). See section 5.
+routing-precision fix to the tier-1 matcher itself. **Immediately after that batch
+shipped**, the user asked directly for an explicit accuracy target on the whole chatbot
+(">95% accuracy, <5% risk of hallucinations or wrong responses") - this produced a
+50-case tool-selection accuracy eval (100% (50/50), a real regression gate now) and a
+deterministic narration-grounding safety net (every number in a narrated answer must
+trace back to the real tool data or the answer falls back to a plain, mechanically-
+generated sentence instead) - plus two honestly-filed, deliberately-not-yet-fixed
+tickets naming the real gaps neither of those two mechanisms closes. See section 6.
+Before all of that, the data source went fully live: a real Google Sheet now feeds
+Supabase on a lazy poll-on-request cycle (no more manual `.xlsx` re-sync), and a global
+date-range filter reaches every dashboard page and the chat's inject-and-narrate
+queries — both modeled on the sibling Savanna QSR Intelligence product's actual
+architecture (read directly from its repo, not assumed). See section 5.
 
 ## Repo state
 
@@ -143,6 +150,20 @@ its repo, not assumed). See section 5.
     (`_overlap` switched from recall-only to Jaccard scoring) and a real design pivot
     (an LLM-prompted fix for confidently-guessed answers on subject-less questions was
     tested, found unreliable, and replaced with a deterministic check). See section 6.
+  - `20939eb` — fixed the debt-question wording gap (the follow-up round's finding,
+    `explain_gap`'s prompt now checks the not-tracked list even for a short/indirect
+    phrasing) and added 8 new tier-3 tools (tickets 16–23: labour, harvest yield,
+    breeding, feed stock, batch weight, market readiness, health cost, revenue
+    breakdown). See section 6.
+  - `c32f811` — a tool-selection accuracy eval (ticket 24, 50 cases, 100% (50/50)) and a
+    deterministic narration-grounding safety net (ticket 25) — both built in response to
+    the user asking for an explicit >95% accuracy / <5% wrong-response target, split
+    along the pipeline's two real failure points (which tool gets picked vs. whether its
+    narration is numerically honest). See section 6.
+  - `2b20751` — filed tickets 26 (the eval is self-authored, needs an independent blind
+    set from real `query_log` questions) and 27 (neither eval nor grounding check covers
+    a tool that runs cleanly and answers the *wrong* question with a real number) - both
+    open, deliberately not fixed yet. See section 6.
 - Throwaway branch `prototype/supabase-domain-join-test` (`447dbec`) — the SQLite
   prototype that first found the sync's feed_inventory grain issue. Deliberately not
   merged into `main` (prototypes are a primary source kept on their own branch here).
@@ -681,7 +702,7 @@ upholding the same principle).
   already there from section 4's work), consistent with the app's existing public/no-auth
   posture.
 
-### 6. Chatbot catalog expansion: tier-0 + tier-3 — `spec-chatbot-catalog-expansion.md`, tickets 01–23
+### 6. Chatbot catalog expansion: tier-0 + tier-3 — `spec-chatbot-catalog-expansion.md`, tickets 01–27
 
 **Context this closes out**: since early in this project, a `/grill-me` session on
 expanding the chatbot beyond its fixed 4-query catalog had been parked mid-flight -
@@ -1002,6 +1023,81 @@ returns nearly every recorded batch on this farm's real data, since older/alread
 batches never get their target date cleared - an honest reflection of the source data
 (no status filter to hide behind, per the fix above), not a query defect.
 
+**Accuracy target round - the user asked directly for a number**: after reviewing the
+8-tool batch, the user asked how confidently the chatbot avoids "I can't answer that"
+(answered qualitatively - strong core coverage, but a fixed-tool-catalog architecture
+has an inherent long tail, ~6/10 honest assessment), then pivoted to a stricter, opposite
+question: ">95% accuracy, <5% risk of hallucinations or wrong responses." The key
+reframe, given back to the user before building anything: coverage gaps (the generic
+wall) are a *safe* failure and were explicitly not what this round targeted; the two
+real failure points that can produce a *wrong* answer are (1) tool selection (the LLM
+picks the wrong function) and (2) narration (the right data comes back, but the
+sentence invents or alters a number). Two separate, targeted mechanisms were built, one
+per failure point - not a rearchitecture.
+
+**Tool-selection accuracy eval (ticket 24, `tests/test_chatbot_tool_selection_eval.py`)**:
+a single holistic eval, 50 cases, distinct from every per-tool
+"resolve_tool_call picks X for canonical phrasings" test elsewhere in the suite (those
+stay as narrow per-tool sanity checks). 40 "canonical" cases (harvested from each tool's
+own existing test file, re-run together), 3 "adversarial" cases (fresh paraphrasings of
+the exact confusion boundaries that caused real regressions earlier this project - FCR
+vs. mortality rate, expense category vs. domain - not the same phrasing the original
+regression test already covers, to actually stress the boundary), 7 "negative" cases
+that must resolve to no tool at all (the real historical "are we owing anyone" bug,
+genuinely domain-ambiguous questions, genuinely out-of-scope questions). Asserts
+`accuracy >= 0.95` directly - the >95% target is a real, enforced pytest assertion, not
+just a description. **100% (50/50)**, stable across 2 repeated runs. This is the exact
+regression gate that would have caught the `q_health_cost_summary` mis-routing
+regression (below) automatically, instead of it being found by re-running two
+specific tests by hand.
+
+**Narration-grounding safety net (ticket 25, `chatbot/grounding.py`)**: a deterministic
+check run inside `_phrase()` itself (the one shared narration function every tier
+already funnels through), after the LLM narrates, before its text is trusted. Every
+number the narration mentions must trace back (within a small tolerance) to a real
+numeric leaf value somewhere in the computed data; if any number doesn't, the LLM's
+sentence is discarded for `fallback_narration()` - a plain, mechanically-generated
+sentence built directly from the data (uglier, but structurally incapable of inventing
+a number, since no LLM sits in that path). This is the same design move as
+`chatbot/ambiguity.py` (a prompt instruction telling the model not to invent a number
+is not the same as guaranteeing it won't) applied to the opposite end of the pipeline -
+question-side there, answer-side here.
+
+**A real bug in the grounding check was found and fixed while wiring it in - the exact
+kind of thing this whole accuracy-target round exists to catch, catching itself**: the
+first version erased every known *string value* from the narration text before
+scanning for numbers (so a batch code or an ISO date embedded in prose wouldn't be
+misread as a fabricated number), but several tools - `q_batch_weight`, `q_fcr_ranking` -
+key a per-batch breakdown *by* the batch code directly (`{"PIG-B01": 28.5}`), so the
+code only ever appears as a dict *key*, never a value. The check missed it, read the
+"01" in "PIG-B01" as a freestanding invented number, and wrongly discarded a genuinely
+correct narration - caught immediately by the full test suite
+(`test_chatbot_tier3_batch_weight.py`), not by the eval. Fixed by also walking dict
+keys, plus a stricter number regex (a match can't be directly glued to a letter or digit
+on either side) as defense in depth. Re-verified: 12 real production questions across a
+range of tools (nested per-batch breakdowns, buyer names with spaces, dates,
+percentages, decimals) - zero false positives, every real answer passed through
+unmodified.
+
+**Two follow-on tickets filed, deliberately left open rather than fixed now** (per the
+user's explicit instruction - "file both as tickets, don't fix them now" - after being
+told the caveats shouldn't block the deploy): **ticket 26** - the eval is self-authored,
+not an unbiased measurement (most cases are the same phrasings already used to build and
+test the tools); needs a second, blind eval built from real `query_log` questions.
+**ticket 27** - neither the eval nor the grounding check catches a tool that runs
+cleanly and returns a real, correctly-sourced number that answers a *different*
+question than the one asked (e.g. right tool, wrong argument) - currently only
+catchable by a manual QA pass or a live user report. Both tickets record the same
+baseline stated here as their starting point, so whoever picks them up isn't starting
+blind.
+
+**176 tests passing** (up from 163), run twice for stability - zero regressions either
+time after the dict-key fix. Deployed (`c32f811` + `2b20751`, deploy
+`dep-datf4uugekts73aitsqg`) and verified live against production for both mechanisms'
+effects (`q_revenue_breakdown`/`q_headcount` answered correctly through the real
+deployed app, via `gradio_client` against the `/_chat_fn` endpoint - discovered via
+`client.view_api()` since the chat component's real API name isn't `/chat`).
+
 ## Open items — unresolved, don't assume either way
 
 - ~~A `/grill-me` session on expanding the chatbot's catalog into NL-to-SQL was
@@ -1028,6 +1124,16 @@ batches never get their target date cleared - an honest reflection of the source
   small/independent and could be picked up anytime; Shona was dropped after a real spike
   found a concrete defect; the rest are deliberately sequenced after further
   evidence-driven tool-coverage batches land.
+- **Ticket 26 (open) - the tool-selection eval (ticket 24) is self-authored, not an
+  unbiased measurement.** Most of its 50 cases are the same phrasings already used to
+  build and test the tools. Needs a second, blind eval built from real `query_log`
+  questions instead, to get an honest accuracy number rather than one scored against
+  already-anticipated confusions. See section 6.
+- **Ticket 27 (open) - neither the tool-selection eval nor the narration-grounding check
+  catches a tool that runs cleanly and answers the wrong question with a real,
+  correctly-sourced number** (e.g. right tool, wrong argument - a period or domain that
+  technically executes and returns grounded data, just not for what was actually asked).
+  Currently only catchable by a manual QA pass or a live user report. See section 6.
 - **A real, general lesson from this phase, worth applying to any future prompt-based
   fix attempt**: an LLM system prompt with explicit negative instructions ("do NOT do X
   for case Y") is not reliably followed once a model has a plausible-seeming "safe"
