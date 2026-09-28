@@ -23,7 +23,9 @@ from chatbot.catalog import (
     active_headcount_asof,
     date_filter_sql,
     deaths_in_window,
+    farrowing_records,
     fcr_by_batch,
+    health_by_event_type,
 )
 
 FEED_COST_BY_DOMAIN_SQL = """
@@ -381,11 +383,6 @@ def fetch_feed_cost_by_month(conn, date_from=None, date_to=None):
 # Health page
 # ---------------------------------------------------------------------------
 
-HEALTH_BY_EVENT_TYPE_SQL = """
-    SELECT domain, event_type, COUNT(*) AS event_count, SUM(cost) AS total_cost
-    FROM health_log WHERE 1=1{date_filter} GROUP BY domain, event_type ORDER BY domain, event_type
-"""
-
 RECENT_HEALTH_EVENTS_SQL = """
     SELECT date, domain, batch_ref, event_type, diagnosis, cost
     FROM health_log WHERE 1=1{date_filter} ORDER BY date DESC LIMIT 10
@@ -393,9 +390,7 @@ RECENT_HEALTH_EVENTS_SQL = """
 
 
 def fetch_health_summary(conn, date_from=None, date_to=None):
-    params = {}
-    date_filter = date_filter_sql("date", date_from, date_to, params)
-    return _rows(conn, HEALTH_BY_EVENT_TYPE_SQL.format(date_filter=date_filter), params)
+    return health_by_event_type(conn, date_from=date_from, date_to=date_to)
 
 
 def fetch_recent_health_events(conn, date_from=None, date_to=None):
@@ -408,16 +403,8 @@ def fetch_recent_health_events(conn, date_from=None, date_to=None):
 # Breeding page
 # ---------------------------------------------------------------------------
 
-FARROWING_RECORDS_SQL = """
-    SELECT sow_tag, service_date, farrow_date, born_alive, stillborn, weaned_count
-    FROM breeding_farrowing WHERE 1=1{date_filter} ORDER BY service_date
-"""
-
-
 def fetch_breeding_summary(conn, date_from=None, date_to=None):
-    params = {}
-    date_filter = date_filter_sql("service_date", date_from, date_to, params)
-    rows = _rows(conn, FARROWING_RECORDS_SQL.format(date_filter=date_filter), params)
+    rows = farrowing_records(conn, date_from=date_from, date_to=date_to)
     completed = [r for r in rows if r["farrow_date"] is not None]
     return {
         "records": rows,

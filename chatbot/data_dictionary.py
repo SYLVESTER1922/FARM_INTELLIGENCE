@@ -29,8 +29,9 @@ This farm's chatbot can answer questions from data the farm actually tracks:
 
 This farm's chatbot CANNOT answer questions about data that isn't tracked
 at all:
-- Accounts payable - money the farm owes to suppliers or creditors (only
-  revenue owed TO the farm is tracked, a different thing).
+- Accounts payable, e.g. "do we owe anyone?" or "are we owing anyone?" -
+  money the farm owes to suppliers or creditors (only revenue owed TO the
+  farm is tracked, a different thing).
 - Staff payroll history, tax records, or anything beyond each staff
   member's current pay rate.
 - Equipment, machinery, or vehicle inventory or maintenance records.
@@ -47,18 +48,36 @@ def explain_gap(question: str, openai_client) -> str | None:
     a genuinely generic miss (not farm-data-adjacent at all), in which
     case the caller falls back to the plain unresolved message - a single
     attempt, no retry, same precedent as every other LLM call in this
-    engine."""
+    engine.
+
+    A real reliability issue found via a QA pass: the model would default
+    to NONE for a short, indirectly-phrased question ("do we owe anyone?")
+    even though it names a specific concept in the CANNOT-answer list
+    below (accounts payable) - it read "short/vague-sounding" as "not
+    really about this farm's data" rather than checking the list first.
+    Verified over several repeated trials before and after this fix - the
+    dictionary text alone (adding example phrasings) was NOT enough on its
+    own and one earlier, longer attempt at it actually regressed a
+    previously-reliable case; the instruction below explicitly telling the
+    model to check the list even for short questions is what fixed it,
+    confirmed stable across repeated trials with zero regression on the
+    already-working longer phrasing."""
     prompt = (
         "A farm-management chatbot could not answer a question with any "
         "of its existing data or tools. Below is a description of what "
-        "this farm's data does and does not track. If the question is "
-        "about something specific this farm genuinely doesn't track, "
-        "explain that honestly and briefly in one sentence - name what's "
-        "different about it if there's something similar that IS "
-        "tracked (e.g. distinguish accounts payable from revenue owed to "
-        "the farm). If the question isn't really about this farm's data "
-        "at all, respond with exactly the single word NONE.\n\n"
+        "this farm tracks and does not track. Check the second list (what "
+        "it cannot answer) carefully even for a short or indirectly-"
+        "phrased question - a brief question like \"do we owe anyone?\" "
+        "still names a specific concept in that list (accounts payable) "
+        "and must be matched to it, not dismissed as too vague.\n\n"
         f"{DATA_DICTIONARY}\n\n"
+        "If the question matches an item in that second list, state "
+        "plainly and factually, in one sentence, what is not tracked and "
+        "(if relevant) what similar thing IS tracked instead - do not "
+        "begin the sentence with phrases like \"cannot answer\" or \"the "
+        "chatbot cannot\", just state the fact directly (e.g. \"This farm "
+        "does not track X...\"). If the question matches neither list at "
+        "all, respond with exactly the single word NONE.\n\n"
         f"Question: {question}"
     )
     response = openai_client.chat.completions.create(

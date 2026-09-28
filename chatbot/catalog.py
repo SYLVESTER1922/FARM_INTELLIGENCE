@@ -218,6 +218,50 @@ CROP_DEBTOR_SQL = """
 """
 CROP_DEBTOR_DATE_COLUMN = "date"
 
+FARROWING_RECORDS_SQL = """
+    SELECT sow_tag, service_date, farrow_date, born_alive, stillborn, weaned_count
+    FROM breeding_farrowing WHERE 1=1{date_filter} ORDER BY service_date
+"""
+
+
+def farrowing_records(conn, date_from=None, date_to=None):
+    """Raw farrowing rows as dicts (sow_tag, service_date, farrow_date,
+    born_alive, stillborn, weaned_count), filtered by service_date. Shared
+    by the dashboard's Breeding page (ui/queries.py's
+    fetch_breeding_summary) and the chatbot's tier-3 breeding-summary tool
+    (chatbot/tools.py) - each builds its own aggregation from these same
+    rows, same dependency-direction reason as active_headcount_asof above.
+    Dict-shaped (not raw tuples) to match ui/queries.py's existing _rows
+    convention, which the dashboard's own consuming code already relies on."""
+    params = {}
+    date_filter = date_filter_sql("service_date", date_from, date_to, params)
+    sql = FARROWING_RECORDS_SQL.format(date_filter=date_filter)
+    cursor = conn.execute(sql, params)
+    columns = [d.name for d in cursor.description]
+    return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+
+HEALTH_BY_EVENT_TYPE_SQL = """
+    SELECT domain, event_type, COUNT(*) AS event_count, SUM(cost) AS total_cost
+    FROM health_log WHERE 1=1{date_filter} GROUP BY domain, event_type ORDER BY domain, event_type
+"""
+
+
+def health_by_event_type(conn, date_from=None, date_to=None):
+    """Event count and total cost per (domain, event_type) as dicts,
+    filtered by date. Shared by the dashboard's Health page
+    (ui/queries.py's fetch_health_summary) and the chatbot's tier-3
+    health-cost-summary tool (chatbot/tools.py), same dependency-direction
+    reason as active_headcount_asof above. Dict-shaped for the same reason
+    as farrowing_records above."""
+    params = {}
+    date_filter = date_filter_sql("date", date_from, date_to, params)
+    sql = HEALTH_BY_EVENT_TYPE_SQL.format(date_filter=date_filter)
+    cursor = conn.execute(sql, params)
+    columns = [d.name for d in cursor.description]
+    return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+
 CATALOG = [
     CatalogQuery(
         query_id="feed_cost_split",

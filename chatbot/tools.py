@@ -24,7 +24,14 @@ import datetime
 import json
 from dataclasses import dataclass, field
 
-from chatbot.catalog import active_headcount_asof, date_filter_sql, deaths_in_window, fcr_by_batch
+from chatbot.catalog import (
+    active_headcount_asof,
+    date_filter_sql,
+    deaths_in_window,
+    farrowing_records,
+    fcr_by_batch,
+    health_by_event_type,
+)
 
 VALID_HEADCOUNT_DOMAINS = {"piggery", "poultry"}
 
@@ -449,6 +456,357 @@ def q_expense_by_category(conn, domain: str | None = None, date_from=None, date_
     }
 
 
+LABOUR_SUMMARY_SQL = """
+    SELECT COALESCE(SUM(hours), 0) AS total_hours,
+           COALESCE(SUM(overtime_hours), 0) AS total_overtime_hours,
+           COALESCE(SUM(labour_cost), 0) AS total_labour_cost
+    FROM labour_log
+    WHERE 1=1{date_filter}{domain_filter}
+"""
+
+
+def q_labour_summary(conn, domain: str | None = None, date_from=None, date_to=None) -> dict:
+    """Total labour hours, overtime hours, and labour cost over a date
+    range, farm-wide or for one domain. Closes a real gap: labour_log is
+    tracked (daily hours/cost per staff member/task) but has zero
+    dashboard page and zero prior chat coverage. `domain` optionally
+    narrows to one domain, validated against the same closed vocabulary
+    as expenses (labour_log can also carry shared/unassigned entries with
+    a NULL domain, which a domain filter correctly excludes)."""
+    if domain is not None and domain not in VALID_EXPENSE_DOMAINS:
+        raise InvalidToolArgument(
+            f"domain must be one of {sorted(VALID_EXPENSE_DOMAINS)}, got {domain!r}"
+        )
+
+    params = {}
+    date_filter = date_filter_sql("date", date_from, date_to, params)
+    domain_filter = ""
+    if domain is not None:
+        domain_filter = " AND domain = %(domain)s"
+        params["domain"] = domain
+
+    sql = LABOUR_SUMMARY_SQL.format(date_filter=date_filter, domain_filter=domain_filter)
+    total_hours, total_overtime_hours, total_labour_cost = conn.execute(sql, params).fetchone()
+    return {
+        "domain": domain or "all",
+        "total_hours": float(total_hours),
+        "total_overtime_hours": float(total_overtime_hours),
+        "total_labour_cost": float(total_labour_cost),
+    }
+
+
+HARVEST_YIELD_SQL = """
+    SELECT pl.planting_code, p.plot_code, pl.crop, pl.area_ha,
+           SUM(h.quantity_kg) AS total_kg, SUM(h.field_loss_kg) AS total_loss_kg
+    FROM harvest_log h
+    JOIN plantings pl ON pl.planting_code = h.planting_code
+    JOIN plots p ON p.plot_code = pl.plot_code
+    WHERE 1=1{date_filter}
+    GROUP BY pl.planting_code, p.plot_code, pl.crop, pl.area_ha
+"""
+
+
+def q_harvest_yield(conn, domain: str | None = None, date_from=None, date_to=None) -> dict:
+    """Harvest yield in kg per hectare, per plot/planting - distinct from
+    the Domain Lookup tab's total-kg-harvested figure, which never divides
+    by area. Ranks plots by yield_kg_per_ha to answer "which plot yields
+    best/worst". `domain` is accepted for a uniform tool-calling signature
+    but unused - crops is the only domain harvest_log belongs to."""
+    params = {}
+    date_filter = date_filter_sql("h.date", date_from, date_to, params)
+    sql = HARVEST_YIELD_SQL.format(date_filter=date_filter)
+    rows = conn.execute(sql, params).fetchall()
+    if not rows:
+        return {"found": False}
+
+    by_plot = []
+    for planting_code, plot_code, crop, area_ha, total_kg, total_loss_kg in rows:
+        area_ha = float(area_ha) if area_ha else 0.0
+        total_kg = float(total_kg) if total_kg is not None else 0.0
+        by_plot.append({
+            "plot_code": plot_code, "crop": crop, "area_ha": area_ha,
+            "total_kg": total_kg,
+            "yield_kg_per_ha": round(total_kg / area_ha, 1) if area_ha else None,
+            "field_loss_kg": float(total_loss_kg) if total_loss_kg is not None else 0.0,
+        })
+
+    ranked = sorted((r for r in by_plot if r["yield_kg_per_ha"] is not None),
+                     key=lambda r: r["yield_kg_per_ha"])
+    return {
+        "found": True,
+        "total_harvested_kg": sum(r["total_kg"] for r in by_plot),
+        "total_field_loss_kg": sum(r["field_loss_kg"] for r in by_plot),
+        "best_plot": ranked[-1]["plot_code"] if ranked else None,
+        "best_yield_kg_per_ha": ranked[-1]["yield_kg_per_ha"] if ranked else None,
+        "worst_plot": ranked[0]["plot_code"] if ranked else None,
+        "worst_yield_kg_per_ha": ranked[0]["yield_kg_per_ha"] if ranked else None,
+        "by_plot": by_plot,
+    }
+
+
+def q_breeding_summary(conn, domain: str | None = None, date_from=None, date_to=None) -> dict:
+    """Litters, born-alive, weaned counts, average litter size, and best
+    sow (by born-alive count) over a date range (by service_date) -
+    reusing the exact rows already computed for the dashboard's Breeding
+    page (farrowing_records, relocated to chatbot/catalog.py so this tool
+    and the dashboard share one source of truth). The Breeding page exists
+    on the dashboard but has zero prior chat coverage. `domain` is
+    accepted for a uniform tool-calling signature but unused - breeding
+    is piggery-only, there is nothing to narrow."""
+    rows = farrowing_records(conn, date_from=date_from, date_to=date_to)
+    completed = [r for r in rows if r["farrow_date"] is not None]
+    if not completed:
+        return {"found": False}
+
+    total_litters = len(completed)
+    total_born_alive = sum(r["born_alive"] or 0 for r in completed)
+    total_weaned = sum(r["weaned_count"] or 0 for r in completed)
+    best = max(completed, key=lambda r: r["born_alive"] or 0)
+    return {
+        "found": True,
+        "total_litters": total_litters,
+        "total_born_alive": total_born_alive,
+        "total_weaned": total_weaned,
+        "avg_litter_size": round(total_born_alive / total_litters, 1) if total_litters else None,
+        "best_sow": best["sow_tag"],
+        "best_sow_born_alive": best["born_alive"],
+    }
+
+
+FEED_STOCK_SQL = """
+    SELECT DISTINCT ON (domain, feed_type) domain, feed_type, closing_kg, date
+    FROM feed_inventory
+    WHERE date <= %(cutoff)s{domain_filter}
+    ORDER BY domain, feed_type, date DESC
+"""
+
+_LATEST_FEED_INVENTORY_DATE_SQL = "SELECT MAX(date) FROM feed_inventory"
+
+
+def _latest_feed_inventory_date(conn) -> datetime.date | None:
+    return conn.execute(_LATEST_FEED_INVENTORY_DATE_SQL).fetchone()[0]
+
+
+def q_feed_stock(conn, domain: str | None = None, date_from=None, date_to=None) -> dict:
+    """Current feed stock on hand (closing_kg) per feed type, as of
+    date_to (the currently-selected global filter's end date) or the
+    latest logged inventory date - a point-in-time snapshot, like
+    q_headcount, not a range aggregate; `date_from` is accepted for a
+    uniform signature but unused. Distinct from feed *cost* (already
+    covered by the dashboard's Feed Cost chart and q_expense_by_category)
+    - this is physical stock on hand, closes a real gap ("are we running
+    low on feed")."""
+    if domain is not None and domain not in VALID_HEADCOUNT_DOMAINS:
+        raise InvalidToolArgument(
+            f"domain must be one of {sorted(VALID_HEADCOUNT_DOMAINS)}, got {domain!r}"
+        )
+
+    cutoff = date_to or _latest_feed_inventory_date(conn)
+    if cutoff is None:
+        return {"found": False}
+
+    params = {"cutoff": cutoff}
+    domain_filter = ""
+    if domain is not None:
+        domain_filter = " AND domain = %(domain)s"
+        params["domain"] = domain
+
+    sql = FEED_STOCK_SQL.format(domain_filter=domain_filter)
+    rows = conn.execute(sql, params).fetchall()
+    if not rows:
+        return {"found": False}
+
+    stock = [{"domain": r[0], "feed_type": r[1],
+              "closing_kg": float(r[2]) if r[2] is not None else None,
+              "as_of": str(r[3])} for r in rows]
+    return {
+        "found": True, "as_of": str(cutoff),
+        "stock_by_feed_type": stock,
+        "total_kg": sum(s["closing_kg"] or 0 for s in stock),
+    }
+
+
+_LATEST_PIG_WEIGHT_SQL = """
+    SELECT DISTINCT ON (batch_code) batch_code, avg_weight_kg, date
+    FROM pig_weights WHERE date <= %(cutoff)s{batch_filter}
+    ORDER BY batch_code, date DESC
+"""
+_LATEST_POULTRY_WEIGHT_SQL = """
+    SELECT DISTINCT ON (batch_code) batch_code, avg_weight_g, date
+    FROM poultry_weights WHERE date <= %(cutoff)s{batch_filter}
+    ORDER BY batch_code, date DESC
+"""
+
+
+def q_batch_weight(conn, domain: str | None = None, batch_code: str | None = None,
+                    date_from=None, date_to=None) -> dict:
+    """Latest average sampled weight per batch, as of date_to or the
+    latest headcount data date - a point-in-time snapshot. At least one of
+    `domain` or `batch_code` is required (the schema below doesn't mark
+    either individually required since both are legitimate ways to ask,
+    but calling with neither is a genuine tool-call error). Piggery
+    weights are kg, poultry weights are grams - kept as separate,
+    explicitly-labelled fields (never merged into one "weight" number) so
+    the narrator never mixes units."""
+    if domain is not None and domain not in VALID_HEADCOUNT_DOMAINS:
+        raise InvalidToolArgument(
+            f"domain must be one of {sorted(VALID_HEADCOUNT_DOMAINS)}, got {domain!r}"
+        )
+    if domain is None and batch_code is None:
+        raise InvalidToolArgument("q_batch_weight requires domain and/or batch_code")
+
+    cutoff = date_to or _latest_headcount_date(conn)
+    domains_to_check = [domain] if domain else ["piggery", "poultry"]
+
+    piggery_weights = {}
+    poultry_weights = {}
+    for d in domains_to_check:
+        params = {"cutoff": cutoff}
+        batch_filter = ""
+        if batch_code is not None:
+            batch_filter = " AND batch_code = %(batch_code)s"
+            params["batch_code"] = batch_code
+        if d == "piggery":
+            rows = conn.execute(_LATEST_PIG_WEIGHT_SQL.format(batch_filter=batch_filter), params).fetchall()
+            piggery_weights = {r[0]: float(r[1]) for r in rows if r[1] is not None}
+        else:
+            rows = conn.execute(_LATEST_POULTRY_WEIGHT_SQL.format(batch_filter=batch_filter), params).fetchall()
+            poultry_weights = {r[0]: float(r[1]) for r in rows if r[1] is not None}
+
+    if not piggery_weights and not poultry_weights:
+        return {"found": False}
+
+    result = {"found": True, "as_of": str(cutoff)}
+    if piggery_weights:
+        result["piggery_avg_weight_kg_by_batch"] = piggery_weights
+    if poultry_weights:
+        result["poultry_avg_weight_g_by_batch"] = poultry_weights
+    return result
+
+
+PIG_MARKET_READINESS_SQL = """
+    SELECT batch_code, target_market_date FROM pig_batches
+    WHERE target_market_date IS NOT NULL
+"""
+POULTRY_MARKET_READINESS_SQL = """
+    SELECT batch_code, target_off_date FROM poultry_batches
+    WHERE target_off_date IS NOT NULL
+"""
+
+
+def q_market_readiness(conn, domain: str | None = None, date_from=None, date_to=None) -> dict:
+    """Batches that are overdue for market/off-take (target date before
+    the as-of date) or coming up within the next 30 days - "are any
+    batches ready to sell / overdue". As-of date_to or the latest
+    headcount data date; `date_from` is accepted for a uniform signature
+    but unused (this is a point-in-time readiness check, not a range
+    aggregate). Deliberately not filtered by a `status` column: real
+    fixtures show pig_batches and poultry_batches use different status
+    vocabularies (e.g. "Active" vs "Growing"), so a single hardcoded
+    status string would silently exclude one domain's batches - safer to
+    show every batch with a target date and let the farmer's own
+    knowledge of which batches are already sold filter the rest, than to
+    guess a status value and hide real results."""
+    if domain is not None and domain not in VALID_HEADCOUNT_DOMAINS:
+        raise InvalidToolArgument(
+            f"domain must be one of {sorted(VALID_HEADCOUNT_DOMAINS)}, got {domain!r}"
+        )
+
+    today = date_to or _latest_headcount_date(conn)
+    domains_to_check = [domain] if domain else ["piggery", "poultry"]
+    horizon = today + datetime.timedelta(days=30)
+
+    overdue = []
+    upcoming = []
+    for d in domains_to_check:
+        sql = PIG_MARKET_READINESS_SQL if d == "piggery" else POULTRY_MARKET_READINESS_SQL
+        for batch_code, target_date in conn.execute(sql).fetchall():
+            entry = {"batch_code": batch_code, "domain": d, "target_date": str(target_date)}
+            if target_date < today:
+                overdue.append(entry)
+            elif target_date <= horizon:
+                upcoming.append(entry)
+
+    return {"as_of": str(today), "overdue_batches": overdue, "upcoming_batches_30_days": upcoming}
+
+
+def q_health_cost_summary(conn, domain: str | None = None, date_from=None, date_to=None) -> dict:
+    """Total health/vet events and cost over a date range, farm-wide or
+    for one domain, with a breakdown by event type - reusing the exact
+    rows already computed for the dashboard's Health page
+    (health_by_event_type, relocated to chatbot/catalog.py). Distinct from
+    the existing piggery_disease_outbreak catalog query, which only ever
+    surfaces today's single worst batch - this tool answers cost/trend
+    questions over an arbitrary period instead."""
+    if domain is not None and domain not in VALID_HEADCOUNT_DOMAINS:
+        raise InvalidToolArgument(
+            f"domain must be one of {sorted(VALID_HEADCOUNT_DOMAINS)}, got {domain!r}"
+        )
+
+    rows = health_by_event_type(conn, date_from=date_from, date_to=date_to)
+    if domain is not None:
+        rows = [r for r in rows if r["domain"] == domain]
+    if not rows:
+        return {"found": False}
+
+    total_events = sum(r["event_count"] for r in rows)
+    total_cost = float(sum(r["total_cost"] or 0 for r in rows))
+    breakdown = [{"domain": r["domain"], "event_type": r["event_type"],
+                  "count": r["event_count"], "cost": float(r["total_cost"] or 0)}
+                 for r in rows]
+    return {
+        "found": True, "domain": domain or "all",
+        "total_events": total_events, "total_cost": total_cost,
+        "breakdown_by_event_type": breakdown,
+    }
+
+
+TOP_BUYERS_SQL = """
+    SELECT buyer, SUM(total_amount) AS total FROM revenue
+    WHERE buyer IS NOT NULL{date_filter}{domain_filter}
+    GROUP BY buyer ORDER BY total DESC LIMIT 5
+"""
+TOP_PRODUCTS_SQL = """
+    SELECT product, SUM(total_amount) AS total FROM revenue
+    WHERE 1=1{date_filter}{domain_filter}
+    GROUP BY product ORDER BY total DESC LIMIT 5
+"""
+VALID_REVENUE_BREAKDOWN_BY = {"buyer", "product"}
+
+
+def q_revenue_breakdown(conn, by: str | None = None, domain: str | None = None,
+                         date_from=None, date_to=None) -> dict:
+    """Top 5 buyers or products by total revenue, over a date range,
+    farm-wide or for one domain - "who's our biggest buyer", "what's our
+    best-selling product". `by` is required in the tool schema (declared
+    below) and validated explicitly, same pattern as q_cost_per_animal's
+    required `domain`."""
+    if by is None or by not in VALID_REVENUE_BREAKDOWN_BY:
+        raise InvalidToolArgument(
+            f"by must be one of {sorted(VALID_REVENUE_BREAKDOWN_BY)}, got {by!r}"
+        )
+    if domain is not None and domain not in VALID_EXPENSE_DOMAINS:
+        raise InvalidToolArgument(
+            f"domain must be one of {sorted(VALID_EXPENSE_DOMAINS)}, got {domain!r}"
+        )
+
+    params = {}
+    date_filter = date_filter_sql("date", date_from, date_to, params)
+    domain_filter = ""
+    if domain is not None:
+        domain_filter = " AND domain = %(domain)s"
+        params["domain"] = domain
+
+    sql_template = TOP_BUYERS_SQL if by == "buyer" else TOP_PRODUCTS_SQL
+    sql = sql_template.format(date_filter=date_filter, domain_filter=domain_filter)
+    rows = conn.execute(sql, params).fetchall()
+    if not rows:
+        return {"found": False}
+
+    return {"found": True, "by": by, "domain": domain or "all",
+            "top_5": [{by: r[0], "total_revenue": float(r[1])} for r in rows]}
+
+
 TOOLS_SCHEMA = [
     {"type": "function", "function": {
         "name": "q_headcount",
@@ -613,6 +971,128 @@ TOOLS_SCHEMA = [
             },
         }},
     }},
+    {"type": "function", "function": {
+        "name": "q_labour_summary",
+        "description": (
+            "Total labour hours, overtime hours, and labour cost over a "
+            "period, farm-wide or for one domain. Use for 'how many "
+            "labour hours did we use', 'what's our labour cost', "
+            "'overtime hours this month'."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "domain": {
+                "type": "string", "enum": ["piggery", "poultry", "crops"],
+                "description": "Omit for the farm-wide total.",
+            },
+        }},
+    }},
+    {"type": "function", "function": {
+        "name": "q_harvest_yield",
+        "description": (
+            "Harvest yield in kg per hectare, per plot - a per-area "
+            "efficiency figure, NOT the same as a total-kg-harvested "
+            "number. Use for 'which plot yields best/worst', 'yield per "
+            "hectare', 'how efficient was our harvest'."
+        ),
+        "parameters": {"type": "object", "properties": {}},
+    }},
+    {"type": "function", "function": {
+        "name": "q_breeding_summary",
+        "description": (
+            "Litters, piglets born alive, piglets weaned, average litter "
+            "size, and best sow over a period. Use for 'how many litters "
+            "this month', 'average litter size', 'which sow had the "
+            "biggest litter', 'weaning numbers'."
+        ),
+        "parameters": {"type": "object", "properties": {}},
+    }},
+    {"type": "function", "function": {
+        "name": "q_feed_stock",
+        "description": (
+            "Current physical feed stock on hand (kg), by feed type - NOT "
+            "feed cost or feed spending. Use for 'how much feed do we "
+            "have left', 'are we running low on feed', 'current feed "
+            "stock'."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "domain": {
+                "type": "string", "enum": ["piggery", "poultry"],
+                "description": "Omit to get stock for both domains.",
+            },
+        }},
+    }},
+    {"type": "function", "function": {
+        "name": "q_batch_weight",
+        "description": (
+            "Latest average sampled weight for a batch, or all batches in "
+            "a domain. Use for 'what's the average weight of batch X', "
+            "'how heavy are the pigs/chickens right now', 'current growth "
+            "weight'. At least one of domain or batch_code must be given."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "domain": {
+                "type": "string", "enum": ["piggery", "poultry"],
+                "description": "Which domain's batches to look up.",
+            },
+            "batch_code": {
+                "type": "string",
+                "description": "A specific batch code, if the question names one.",
+            },
+        }},
+    }},
+    {"type": "function", "function": {
+        "name": "q_market_readiness",
+        "description": (
+            "Which batches are overdue for market/off-take, or coming up "
+            "within 30 days. Use for 'which batches are ready to sell', "
+            "'are any pigs/chickens overdue for market', 'upcoming "
+            "off-take'."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "domain": {
+                "type": "string", "enum": ["piggery", "poultry"],
+                "description": "Omit to check both domains.",
+            },
+        }},
+    }},
+    {"type": "function", "function": {
+        "name": "q_health_cost_summary",
+        "description": (
+            "Total health/vet events and cost over a period, farm-wide or "
+            "for one domain, broken down by event type. Use ONLY for a "
+            "question that explicitly names cost, spending, or events over "
+            "a period, e.g. 'how much have we spent on vet care', 'health "
+            "events this month', 'vet cost trend'. Do NOT use for a vague "
+            "'is something wrong' / 'is there a problem with a batch' "
+            "question that doesn't name a domain - that is genuinely "
+            "ambiguous between a piggery and a poultry concern and must be "
+            "left unresolved, not guessed at with this or any other tool."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "domain": {
+                "type": "string", "enum": ["piggery", "poultry"],
+                "description": "Omit for the farm-wide total.",
+            },
+        }},
+    }},
+    {"type": "function", "function": {
+        "name": "q_revenue_breakdown",
+        "description": (
+            "Top 5 buyers or products by total revenue, over a period, "
+            "farm-wide or for one domain. Use for 'who's our biggest "
+            "buyer', 'what's our best-selling product', 'top customers'."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "by": {
+                "type": "string", "enum": ["buyer", "product"],
+                "description": "Required - which dimension to rank by.",
+            },
+            "domain": {
+                "type": "string", "enum": ["piggery", "poultry", "crops"],
+                "description": "Omit for the farm-wide total.",
+            },
+        }, "required": ["by"]},
+    }},
 ]
 
 TOOL_FUNC_MAP = {
@@ -627,6 +1107,14 @@ TOOL_FUNC_MAP = {
     "q_mortality_rate": q_mortality_rate,
     "q_expense_by_category": q_expense_by_category,
     "q_fcr_ranking": q_fcr_ranking,
+    "q_labour_summary": q_labour_summary,
+    "q_harvest_yield": q_harvest_yield,
+    "q_breeding_summary": q_breeding_summary,
+    "q_feed_stock": q_feed_stock,
+    "q_batch_weight": q_batch_weight,
+    "q_market_readiness": q_market_readiness,
+    "q_health_cost_summary": q_health_cost_summary,
+    "q_revenue_breakdown": q_revenue_breakdown,
 }
 
 # Statically declared per tool, at registration time - same rule the
@@ -647,6 +1135,14 @@ TOOL_DOMAINS = {
     "q_mortality_rate": ["piggery", "poultry"],
     "q_expense_by_category": ["piggery", "poultry", "crops"],
     "q_fcr_ranking": ["piggery", "poultry"],
+    "q_labour_summary": ["piggery", "poultry", "crops"],
+    "q_harvest_yield": ["crops"],
+    "q_breeding_summary": ["piggery"],
+    "q_feed_stock": ["piggery", "poultry"],
+    "q_batch_weight": ["piggery", "poultry"],
+    "q_market_readiness": ["piggery", "poultry"],
+    "q_health_cost_summary": ["piggery", "poultry"],
+    "q_revenue_breakdown": ["piggery", "poultry", "crops"],
 }
 
 

@@ -13,20 +13,6 @@ def _seed(tmp_path, dsn):
 def test_accounts_payable_question_gets_honest_specific_refusal(tmp_path, db_conn, test_dsn):
     _seed(tmp_path, test_dsn)
 
-    # "What accounts payable does the farm have?" - a real, natural
-    # phrasing of the real logged failure this ticket targets ("Do we owe
-    # anyone money?"). Note: the more indirect original phrasing was
-    # tested directly during development and found genuinely borderline -
-    # it shares enough vocabulary with crop_debtor's own catalog phrase
-    # ("who owes US money for crops") that tier-2's LLM classifier
-    # occasionally (non-deterministically) misroutes it there instead of
-    # falling through to this gap-explanation path at all, and even when
-    # it does fall through, explain_gap doesn't always catch the more
-    # indirect phrasing specifically. This is a real, pre-existing
-    # limitation of both tier-2's classification and the LLM-based gap
-    # explainer for phrasing that doesn't closely match the curated
-    # dictionary's own vocabulary - documented honestly here rather than
-    # tested with a flaky assertion.
     answer = answer_question(
         "What accounts payable does the farm have?", farm_code="NIS-001", dsn=test_dsn,
     )
@@ -35,6 +21,29 @@ def test_accounts_payable_question_gets_honest_specific_refusal(tmp_path, db_con
     assert answer.query_id is None
     assert answer.text != "I can't answer that yet - I don't have a way to look that up."
     assert "accounts payable" in answer.text.lower() or "owes" in answer.text.lower()
+
+
+def test_original_indirect_owing_phrasing_now_reliably_gets_specific_refusal(
+    tmp_path, db_conn, test_dsn
+):
+    # "Do we owe anyone money?" - the real, original logged failure this
+    # ticket first targeted. Originally documented here as genuinely
+    # borderline/flaky: it shares enough vocabulary with crop_debtor's own
+    # catalog phrase ("who owes US money for crops") that tier-2's LLM
+    # classifier occasionally misrouted it there (fixed separately in
+    # 6d3e063 - 2 example phrases per catalog entry instead of 1, plus
+    # phrase reordering), and even when it correctly fell through,
+    # explain_gap didn't always catch the indirect phrasing specifically
+    # (fixed here - see data_dictionary.py's explain_gap docstring for
+    # what actually fixed it, and why a first attempt didn't). Both fixes
+    # together made this reliable - verified across 9 repeated real calls
+    # (3 phrasings x 3 trials) before trusting a non-flaky assertion here.
+    _seed(tmp_path, test_dsn)
+
+    for question in ["Do we owe anyone money?", "Do we owe anyone?", "Are we owing anyone?"]:
+        answer = answer_question(question, farm_code="NIS-001", dsn=test_dsn)
+        assert answer.query_id is None, question
+        assert "accounts payable" in answer.text.lower(), (question, answer.text)
 
 
 def test_genuinely_out_of_scope_question_still_refuses_cleanly(tmp_path, db_conn, test_dsn):

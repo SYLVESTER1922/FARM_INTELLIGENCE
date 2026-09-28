@@ -13,12 +13,22 @@ between pigs and chickens") in plain language, for real, against the cloud datab
 expansion mechanism — a tier-0 (greetings/help) and a tier-3 (OpenAI native tool-calling
 over real Python query functions, never LLM-generated SQL) sitting alongside the
 original tier-1/tier-2 catalog, unchanged. This formally resolved a `/grill-me` session
-that had been parked mid-flight for most of this project's history. See section 6.
-Before that, the data source went fully live: a real Google Sheet now feeds Supabase on
-a lazy poll-on-request cycle (no more manual `.xlsx` re-sync), and a global date-range
-filter reaches every dashboard page and the chat's inject-and-narrate queries — both
-modeled on the sibling Savanna QSR Intelligence product's actual architecture (read
-directly from its repo, not assumed). See section 5.
+that had been parked mid-flight for most of this project's history. Real production
+usage then drove three more rounds of real bug-finding and fixing — a live user
+transcript, then two deliberate pre-deploy QA passes (one on phrasing/coverage, one on
+security/edge-cases) — followed by a post-deploy follow-up round (three specific
+regression/behavior checks the user raised after using the live deploy personally) and
+then one large evidence-driven expansion batch covering 8 new subject areas (labour,
+harvest yield efficiency, breeding performance, feed stock, weight/growth tracking,
+market/off-take readiness, health/vet cost trends, revenue breakdown) — landing tier-3
+at **19 tools total**, a data dictionary for honest refusals, a deterministic (not
+LLM-prompted) fix for confidently-guessed answers on subject-less questions, and a real
+routing-precision fix to the tier-1 matcher itself. See section 6. Before that, the data
+source went fully live: a real Google Sheet now feeds Supabase on a lazy
+poll-on-request cycle (no more manual `.xlsx` re-sync), and a global date-range filter
+reaches every dashboard page and the chat's inject-and-narrate queries — both modeled on
+the sibling Savanna QSR Intelligence product's actual architecture (read directly from
+its repo, not assumed). See section 5.
 
 ## Repo state
 
@@ -115,6 +125,24 @@ directly from its repo, not assumed). See section 5.
   - `872aaaa` — tickets 07–08: two more tier-3 tools (crop types listing, cumulative
     expenses to date), both sourced from real `query_log` evidence generated within
     minutes of the tickets 01–06 deploy going live. See section 6.
+  - `6b2b8f8` — this doc's previous update (chatbot catalog expansion, tier-0 + tier-3).
+  - `f90974b` — Domain Lookup tab: pick Piggery/Poultry/Crops from a dropdown, see a
+    summary card of that domain's key metrics without typing a chat question, mirroring
+    Lobels' "Material Lookup". Confirmed independent of the chatbot/tier-3 work per its
+    own ticket - almost entirely reuses `ui/queries.py`'s existing functions. See
+    section 4.
+  - `6d3e063` — fixed a real production bug: a real live-user transcript showed "Are we
+    owing anyone?" getting a confidently wrong answer at two different tiers depending
+    on non-determinism (tier-3 matched a total-expenses tool and narrated an
+    unsupported "likely owe this amount" conclusion; tier-2 matched `crop_debtor` and
+    narrated the direction inverted - "we owe X" when the real fact is the reverse).
+    See section 6.
+  - `7ef9dde` — fixed four more real bugs and closed four more real gaps, found across
+    two deliberate pre-deploy QA passes (phrasing/coverage, then security/edge-cases) -
+    tickets 09–15. Includes a real routing-precision fix to the tier-1 matcher itself
+    (`_overlap` switched from recall-only to Jaccard scoring) and a real design pivot
+    (an LLM-prompted fix for confidently-guessed answers on subject-less questions was
+    tested, found unreliable, and replaced with a deterministic check). See section 6.
 - Throwaway branch `prototype/supabase-domain-join-test` (`447dbec`) — the SQLite
   prototype that first found the sync's feed_inventory grain issue. Deliberately not
   merged into `main` (prototypes are a primary source kept on their own branch here).
@@ -512,6 +540,24 @@ rest are genuinely new real-data pages, not placeholders):
   a user says "make X bigger," prefer a moderate, easily-adjustable first pass over a
   large jump - the 154abfb→c0d3de2 round-trip cost two extra deploy cycles that a
   smaller first move would have avoided.
+- **Domain Lookup tab** (`f90974b`, 10th sidebar item, between Reports and Settings):
+  pick Piggery/Poultry/Crops from a dropdown, see a summary card of that domain's key
+  metrics without typing a chat question - mirroring Lobels' "Material Lookup". Ticketed
+  separately at `.scratch/domain-summary-lookup/issues/`, confirmed independent of the
+  chatbot/tier-3 work before building. Almost entirely reuses existing `ui/queries.py`
+  functions, sliced by their already domain-tagged/domain-split results
+  (`fetch_mortality_by_month`, `fetch_feed_cost_by_month`, `fetch_health_summary`,
+  `fetch_debtors`); the one genuinely new query is `fetch_crops_summary` (plantings/
+  harvest totals - area planted, total harvested, active plots), since no crops-domain
+  summary existed anywhere in that module before. Headcount reuses `active_headcount_asof`
+  (the same methodology already shared by the dashboard's stat card and the chatbot's
+  tier-3 headcount tool) rather than the coarser monthly-aggregated
+  `fetch_headcount_by_month`. The domain dropdown updates its own summary instantly on
+  change, independent of Apply Filter, and is also wired into `load_all`'s
+  orchestration so it stays in sync with the date-range filter too. Module scoping shows
+  an honest "this module is off" state rather than empty/misleading data. Every figure
+  verified against real production Supabase data, independently cross-checked against a
+  direct SQL query for all three domains.
 
 ### 5. Live data architecture: Google Sheets sync + date-range filtering
 
@@ -635,7 +681,7 @@ upholding the same principle).
   already there from section 4's work), consistent with the app's existing public/no-auth
   posture.
 
-### 6. Chatbot catalog expansion: tier-0 + tier-3 — `spec-chatbot-catalog-expansion.md`, tickets 01–08
+### 6. Chatbot catalog expansion: tier-0 + tier-3 — `spec-chatbot-catalog-expansion.md`, tickets 01–23
 
 **Context this closes out**: since early in this project, a `/grill-me` session on
 expanding the chatbot beyond its fixed 4-query catalog had been parked mid-flight -
@@ -722,7 +768,9 @@ phrasing "Do we owe anyone money?" is genuinely borderline enough (shares vocabu
 with `crop_debtor`'s own catalog phrase "who owes US money") that tier-2's classifier
 occasionally, non-deterministically misroutes it there instead of reaching the new
 gap-explanation path - documented in the test file as a pre-existing characteristic of
-tier-2, out of scope to fix here.
+tier-2, out of scope to fix here. **Later fixed** - see the follow-up round below, where
+`fallback.py`'s 2-example-phrases fix closed the tier-2 misrouting half and a second,
+separate `explain_gap` prompt fix closed the wording half.
 
 **Tickets 07-08**, added within minutes of the 01-06 deploy going live, from real
 `query_log` evidence a live user actually generated against production: "What crops do
@@ -779,17 +827,180 @@ picks any of these up out of order:
 4. **Suggested follow-up questions** - sequenced alongside future tool batches, using a
    curated per-tool mapping (each tool declares its own plausible follow-ups) rather
    than an LLM call per answer, to add zero per-turn latency/cost.
-5. **Domain summary lookup tab** (like Lobels' "Material Lookup") - confirmed
-   independent of all of this chatbot work; ticketed separately at
-   `.scratch/domain-summary-lookup/issues/01-domain-summary-lookup-tab.md`, buildable
-   almost entirely from `ui/queries.py`'s existing functions (one small new crops-only
-   query needed - no equivalent exists there yet). **Not yet built.**
+5. **Domain summary lookup tab** (like Lobels' "Material Lookup") - **built**, see
+   section 4 (`f90974b`). Confirmed independent of the chatbot work before building, as
+   planned here.
 6. **Voice input** - small, proven, independent; can slot in anytime. Verified for real
    against Lobels' actual code: `gr.Audio(sources=["microphone"])` +
    `mic.stop_recording(transcribe, ...)` + a ~10-line Whisper (`whisper-1`) call, feeding
-   the existing message textbox - zero changes needed to `chatbot/engine.py`.
+   the existing message textbox - zero changes needed to `chatbot/engine.py`. **Not yet
+   built.**
 7. **Shona language support** - dropped by the user after the real spike above found a
    concrete vocabulary defect (see above). Not pursued further.
+
+**Real production usage since then drove three more rounds of bug-finding and fixing,
+in order:**
+
+**Round 1 - a real live-user transcript** (`6d3e063`) surfaced "Are we owing anyone?"
+getting a confidently wrong answer, non-deterministically at two different tiers: tier-3
+sometimes matched `q_expenses_to_date` (a total-expenses figure) and narrated an
+unsupported "likely owe this amount" conclusion never present in the tool's data; tier-2
+sometimes instead matched `crop_debtor` (money owed *to* the farm) and narrated the
+direction inverted - "we owe Chikafu Grain Traders" when the real fact is the reverse.
+Root cause for the tier-2 half: `fallback.py`'s `_catalog_summary` only ever showed each
+catalog entry's *first* example phrase to the LLM, and `crop_debtor`'s first phrase
+("which crop sales are unpaid") happened to be its least direction-explicit one. Fixed
+by showing 2 example phrases per entry instead of 1, reordering `crop_debtor`'s phrases
+so the clearest directional one leads, and adding explicit negative guidance to
+`q_expenses_to_date`'s tool description. Verified stable across 9 repeated trials (real
+non-determinism means a single passing run proves nothing here).
+
+**Round 2 - a deliberate pre-deploy QA pass on phrasing/coverage** (15 real questions
+against the local instance, tickets 09-12, `7ef9dde`) found: "How many pigs and chickens
+do we have combined?" fabricated "there are no chickens" (509 real poultry existed) -
+tool-selection had guessed `domain=piggery` for a question explicitly asking about both,
+fixed via explicit tool-description guidance ("omit domain for combined questions").
+"What's the cost per pig?" claimed a calculation happened without ever dividing - fixed
+with a real `q_cost_per_animal` tool performing the actual division, never left to the
+LLM. Three real coverage gaps closed with new tools, each checked against the dashboard
+first per the user's own instruction (don't duplicate what's already on screen):
+`q_profit` (revenue minus expenses - the dashboard's Expenses vs Revenue chart shows two
+lines but never computes their difference), `q_mortality_rate` (farm-wide/per-domain
+rate *and* relative-period death counts in one tool, using a symbolic `period` enum
+matching Savanna QSR's own proven pattern - verified by reading its real code - so the
+LLM never computes a relative date itself; it has no way to know "today" here means the
+latest real data date, not the calendar date), `q_expenses_by_domain` (a real breakdown,
+since tier-3 only calls one tool once per turn - extending a single tool to return
+multiple domains, per the user's own sequencing decision from the earlier expanded-scope
+analysis, rather than trying to make the LLM call two tools in one turn).
+
+**Round 3 - a deliberate pre-deploy QA pass on security/malformed-input/edge-cases** (15
+more real questions, tickets 13-15, `7ef9dde`) found **no security issues** - verified
+both architecturally (a full grep of `chatbot/` confirmed zero INSERT/UPDATE/DELETE/
+DROP/ALTER SQL anywhere in the chat pipeline, and zero code paths read `os.environ`/the
+DSN reachable from any chat call) and empirically (an exact table-row-count and
+`pig_daily_log.closing_count` snapshot was unchanged before/after real prompt-injection
+and fake-SQL-injection attempts in the question text - the injection text was never
+interpreted as anything but literal narration input). Two more real correctness bugs
+found: "Which batch has the worst feed conversion ratio?" mismatched at **tier-1** to
+`poultry_mortality_spike` and mislabeled a mortality percentage as FCR - root cause was
+`matcher.py`'s recall-only `_overlap` scoring, which let a short, generic-template
+phrase ("which X has the worst Y") score 0.714 against the FCR question regardless of
+what Y actually was (the shared tokens were all template words - "mortality" itself
+never had to match). Fixed by switching to Jaccard similarity (intersection/union) -
+verified zero regressions, since every existing tier-1 test happens to use exact-phrase
+matches, which score a full 1.0 under either formula; a real `q_fcr_ranking` tool was
+added, reusing `fetch_fcr_by_batch`'s logic (relocated to `chatbot/catalog.py`, same
+pattern as `active_headcount_asof`). "What's our biggest expense category overall?"
+conflated category (Feed/Labour/Vet) with domain (piggery/poultry/crops) - fixed with a
+new `q_expense_by_category` tool and tightened descriptions on both tools so the LLM
+doesn't conflate the two dimensions again. Two more hardening fixes, not new tools: the
+shared `_phrase` narration prompt (used by *every* tier, not just one tool) was adding
+unsupported causal claims not present in the query data ("conditions are stable and
+likely not directly affecting feed consumption") - tightened generally, with one real
+side effect caught and fixed along the way (the new wording initially also made the
+narrator drop real fields - a combined-headcount answer stopped mentioning the
+individual pig/poultry counts - reworded so "mention every field present" stays
+unambiguously dominant). And: "How's it doing?"/"How many?" (no real subject at all)
+were getting a confidently guessed answer instead of a clarifying question - **a real
+design pivot worth remembering**: the first fix attempt was an LLM-selectable
+`ask_for_clarification` pseudo-tool with an explicit system prompt telling GPT-4o-mini
+when to use it; testing found this unreliable (the model over-applied it to cases the
+prompt explicitly excluded - a domain-ambiguous question and an out-of-scope question,
+regressing real previously-passing tests). Replaced with a deterministic Python check
+(`chatbot/ambiguity.py` - strips a small, curated set of question-words/pronouns/
+auxiliary verbs and checks whether any real content word remains) run *before* tier-3's
+LLM is ever called - zero LLM calls for this check, zero non-determinism, directly
+unit-tested. This matches the project's broader preference for deterministic, testable
+logic over trusting LLM judgment wherever a reliable non-LLM check exists.
+
+**135 tests passing** (up from 108 before these three rounds), run twice for stability
+given how much LLM-narration-dependent behavior this touches - zero regressions either
+time. Every fix in all three rounds was independently re-verified against real
+production Supabase data, not just local test-DB coverage, matching this project's
+established discipline throughout.
+
+**Follow-up round - three specific checks the user raised after using the deployed fixes
+personally**, all reported back before the next deploy per the user's instruction:
+1. **Weather narration non-regression**: the round-3 `_phrase()` prompt tightening (see
+   above) was checked against a plain "what's the weather like today" question to
+   confirm the causal-overreach fix didn't also suppress legitimate weather fields -
+   confirmed clean, no regression.
+2. **The apparent multi-turn mystery**: the user noticed what looked like a real
+   conversation (a clarifying question, then "crops", then "What about poultry?", each
+   answered sensibly) and asked whether chat secretly carries state now, contradicting
+   its designed one-shot architecture. Investigated both architecturally (grepped
+   `ui/app.py`, `chatbot/engine.py`, `chatbot/tools.py` - Gradio's `history` parameter is
+   deliberately never threaded past `_chat_fn`'s signature) and empirically (each
+   fragment - "crops", "What about poultry?" - is independently resolvable on its own,
+   with no reference to what came before). Confirmed coincidental, not hidden state:
+   each question in the sequence happened to be answerable standing alone.
+3. **The debt-question wording gap**: "Do we owe anyone?" was still falling through to
+   the generic unresolved wall instead of the specific accounts-payable wording
+   `chatbot/data_dictionary.py` was built for (see ticket 06's known limitation, above).
+   Root-caused to `explain_gap`'s prompt reading a short/indirect phrasing as "too vague
+   to check the list" rather than matching it to the accounts-payable item. **A first fix
+   attempt (more example phrasings added to `DATA_DICTIONARY` text) was tested and found
+   to not just fail to fix the short phrasings, but also regress the previously-reliable
+   longer phrasing** ("What accounts payable does the farm have?") - caught via
+   `git stash`-based A/B testing against the committed version before trusting it, then
+   reverted. The actual fix (in the prompt instruction, not the dictionary text): telling
+   the model explicitly to check the not-tracked list even for a short question, plus a
+   direct instruction against the awkward "cannot answer:"-prefixed phrasing an
+   intermediate version produced. Verified across 21 real calls (3 phrasings x 3 trials,
+   before and after) before trusting it as non-flaky.
+
+**Expansion batch - 8 new subject areas built in one pass** (tickets 16-23, evidence-
+driven from real tracked-but-previously-unexposed schema data, each cross-checked
+against existing dashboard pages first to avoid duplicating on-screen data, per the
+user's own established rule): `q_labour_summary` (hours/overtime/cost from `labour_log`,
+zero prior dashboard or chat coverage), `q_harvest_yield` (kg per hectare per plot,
+joining `harvest_log`/`plantings`/`plots` - distinct from the Domain Lookup tab's
+total-kg figure, which never divides by area), `q_breeding_summary` (litters/born-alive/
+weaned/best-sow - the Breeding dashboard page existed but chat coverage was zero),
+`q_feed_stock` (current physical `closing_kg` on hand per feed type - distinct from feed
+*cost*, already covered), `q_batch_weight` (latest sampled weight per batch, kg for
+piggery / grams for poultry kept as separate labelled fields so units never mix),
+`q_market_readiness` (batches overdue/upcoming for `target_market_date`/
+`target_off_date`), `q_health_cost_summary` (vet cost/event trends over a period -
+distinct from the existing single-worst-batch-today `piggery_disease_outbreak` catalog
+query), `q_revenue_breakdown` (top-5 buyers or products by revenue).
+
+**Two real issues caught before shipping, both from checking real data instead of
+guessing**:
+- `q_market_readiness`'s first draft filtered to `status = 'Active'` batches - reading
+  real fixture sample rows showed `pig_batches` and `poultry_batches` use *different*
+  status vocabularies for an in-progress batch ("Active" vs. "Growing"), so the
+  hardcoded string would have silently excluded every poultry batch. Fixed by dropping
+  the status filter entirely and trusting target dates alone (documented in ticket 21).
+- Adding `q_health_cost_summary` to the tool schema caused a real regression in two
+  **pre-existing** tests: "is something wrong with a batch" (deliberately ambiguous
+  between a piggery-disease and a poultry-mortality catalog entry, meant to fall through
+  to tier-3 and land on `unresolved`/`ambiguous`) started instead getting matched to
+  `q_health_cost_summary`, a plausible-sounding but wrong guess. Fixed by tightening the
+  tool's description to explicitly exclude vague "is something wrong" phrasing and
+  instruct the model to leave it unresolved rather than guess - re-verified stable across
+  4 repeated runs, full suite re-run clean twice after.
+
+`farrowing_records` and `health_by_event_type` were relocated from `ui/queries.py` to
+`chatbot/catalog.py` (same dependency-direction reason as `active_headcount_asof`,
+`fcr_by_batch`, etc. before them) so `q_breeding_summary`/`q_health_cost_summary` and the
+dashboard's Breeding/Health pages share one source of truth - dict-shaped output (not
+raw tuples) to match `ui/queries.py`'s existing `_rows` convention the dashboard's own
+consuming code already relies on.
+
+**163 tests passing** (up from 135), run twice for stability - zero regressions either
+time after the fix above. All 8 new tools verified against real production Supabase
+data, both directly (each tool function called against the live DSN) and independently
+cross-checked against a direct raw-SQL query for the same figure (exact match every
+time - e.g. real piggery labour cost 27360.0, real top buyer "Mbare Musika trader" at
+32240.48, real best-yield plot PL1/Tomatoes at 22625.0 kg/ha, real best sow SOW-03 at 13
+born alive), then again end-to-end through the real chat pipeline (`answer_question`)
+against production for all 8 natural-language phrasings. One real data-quality
+observation worth knowing, not a bug: `q_market_readiness`'s "overdue" list currently
+returns nearly every recorded batch on this farm's real data, since older/already-sold
+batches never get their target date cleared - an honest reflection of the source data
+(no status filter to hide behind, per the fix above), not a query defect.
 
 ## Open items — unresolved, don't assume either way
 
@@ -797,24 +1008,33 @@ picks any of these up out of order:
   mid-flight~~ — **resolved.** The user set a hard constraint (no free-form
   LLM-generated/executed SQL, ruled out entirely) that made the original round-2
   questions moot as framed; a fresh three-round grilling session settled tier-0 +
-  tier-3 tool-calling instead, fully implemented across tickets 01-08. See section 6.
-- **A real, unfixed tier-2 classification ambiguity, found while building ticket 06,
-  documented but out of scope to fix**: the phrasing "Do we owe anyone money?" shares
-  enough vocabulary with `crop_debtor`'s own catalog phrase ("who owes US money for
-  crops") that tier-2's LLM classifier occasionally, non-deterministically misroutes it
-  there instead of correctly falling through to a no-match. This is a pre-existing
-  characteristic of tier-2's classification (not introduced by tier-3/section 6's work),
-  worth hardening at some point - probably means making the catalog's phrase/description
-  summary given to tier-2 more explicit about directionality (money owed *to* the farm
-  vs. *by* the farm), not something to guess a fix for without testing against the real
-  API again.
-- **Seven possible next directions for this chatbot work were analyzed but not built**
-  (exhaustive tool coverage, multi-turn, query caching, suggested follow-ups, a domain
-  summary tab, voice input, Shona support) - full detail and the user's sequencing
-  decision are in section 6's closing paragraphs. Voice input and the domain-summary tab
-  are both confirmed small/independent and could be picked up anytime; Shona was
-  dropped after a real spike found a concrete defect; the rest are deliberately
-  sequenced after further evidence-driven tool-coverage batches land.
+  tier-3 tool-calling instead, fully implemented and hardened across tickets 01-15. See
+  section 6.
+- ~~A real, unfixed tier-2 classification ambiguity around "Do we owe anyone money?"
+  misrouting to `crop_debtor`~~ — **resolved** (`6d3e063`): `_catalog_summary` now shows
+  2 example phrases per catalog entry instead of 1, and `crop_debtor`'s phrases were
+  reordered so the clearest directional one leads. Verified stable across 9 repeated
+  trials. See section 6, round 1.
+- ~~The real logged phrasing "Do we owe anyone money?" still fell through to a generic
+  wall instead of the specific accounts-payable wording~~ — **resolved**, in the
+  follow-up round (see section 6): `explain_gap`'s prompt now explicitly checks the
+  not-tracked list even for a short/indirect question. Verified across 21 real calls.
+- **Five possible next directions for this chatbot work remain analyzed but not built**
+  (multi-turn, query caching, suggested follow-ups, voice input, Shona support - the
+  domain summary tab from this same list has since been built, see section 4; exhaustive
+  tool coverage, direction #1, has since had one large 8-tool batch land, tickets 16-23,
+  and remains open-ended/ongoing rather than "done") - full detail and the user's
+  sequencing decision are in section 6's closing paragraphs. Voice input is confirmed
+  small/independent and could be picked up anytime; Shona was dropped after a real spike
+  found a concrete defect; the rest are deliberately sequenced after further
+  evidence-driven tool-coverage batches land.
+- **A real, general lesson from this phase, worth applying to any future prompt-based
+  fix attempt**: an LLM system prompt with explicit negative instructions ("do NOT do X
+  for case Y") is not reliably followed once a model has a plausible-seeming "safe"
+  option available (here, `ask_for_clarification`) - it over-applied to cases the prompt
+  explicitly excluded, twice, even after the prompt was tightened once already. Where a
+  reliable deterministic check is possible (as it was here - `chatbot/ambiguity.py`),
+  prefer it over trusting the model to correctly self-classify via prompting alone.
 - **`~/.claude/settings.json` question still never answered.** Whether to set
   `permissions.blockReadsOutsideWorkingDirectories` from `true` to `false` (a global,
   not project-scoped, sandboxing setting). Still `true`. Ask before touching it.
@@ -884,10 +1104,11 @@ The scope then grew, by explicit user direction, into a full **intelligence plat
 with a sidebar-nav layout — matching the pattern of sibling Netrisyl product Lobels
 Biscuits Intelligence initially (tabs), then redesigned to match a supplied dashboard
 mockup (sidebar + stat cards + chart grid). Live at
-`https://netrisyl-farm-intelligence.onrender.com`: a 9-item left sidebar — **Dashboard**
+`https://netrisyl-farm-intelligence.onrender.com`: a 10-item left sidebar — **Dashboard**
 (new landing page: stat cards + chart grid), **Chat** (the original goal, unchanged),
 **Herd & Flock**, **Feeding**, **Health**, **Breeding**, **Finance**, **Reports**
-(Findings & Alerts + Data Coverage), **Settings** (see section 4 for the full nav-item
+(Findings & Alerts + Data Coverage), **Domain Lookup** (pick a domain, see its key
+metrics without typing a question), **Settings** (see section 4 for the full nav-item
 mapping and what's genuinely new vs. carried over). All verified end-to-end against the
 live URL via real Playwright screenshots, not just "the deploy succeeded."
 
@@ -898,30 +1119,33 @@ the chat, with chat's date-scoped answers running the same inject-and-narrate qu
 first, LLM-narrates-only-that-result discipline as always. See section 5 for the full
 architecture, verified end-to-end against the live URL the same way.
 
-The scope grew a final time, by explicit user direction, to make the chatbot answer
-"any question the data can actually support," with a hard constraint ruling out
-free-form LLM-generated SQL entirely. **That's now done, tested, and live too**: tier-0
-(greetings/help) and tier-3 (OpenAI native tool-calling over real, safe Python query
-functions - headcount, crop area, crop types, weather, cumulative expenses) sit
+The scope grew again, by explicit user direction, to make the chatbot answer "any
+question the data can actually support," with a hard constraint ruling out free-form
+LLM-generated SQL entirely. **That's now done, tested, and live too, and has continued
+growing since** through real usage: tier-0 (greetings/help) and tier-3 (OpenAI native
+tool-calling over 11 real, safe Python query functions - headcount, crop area planted,
+crop types, weather, cumulative expenses, an expenses-by-domain comparison, cost per
+animal, profit, mortality rate, expense breakdown by category, FCR ranking) sit
 alongside the original tier-1/tier-2 catalog, unchanged. A curated data dictionary backs
-honest "we don't track that" refusals. Two of the eight tickets that built this
-(07-08) were themselves driven by real `query_log` evidence generated within minutes of
-first deploying the rest - the observability this whole feature added is already
-proving out its own premise. See section 6 for the full architecture and the seven
-further directions analyzed (not built) for whoever picks this up next.
+honest "we don't track that" refusals, and a deterministic check catches genuinely
+subject-less questions before they'd otherwise get a confidently guessed answer. Several
+of the fifteen tickets that built this were themselves driven by real `query_log`
+evidence or real logged failures, not guessed in advance - the observability this whole
+feature added is already proving out its own premise, three separate times over. See
+section 6 for the full architecture, all three real-usage-driven hardening rounds, and
+the six further directions analyzed (not built) for whoever picks this up next.
 
 **Not built, still deferred, by explicit user sequencing decision** (see section 6's
 closing paragraphs for the full reasoning): multi-turn conversation handling, query
 result caching, further exhaustive tool coverage (deliberately paced in evidence-driven
-batches, not attempted all at once), suggested follow-up question chips, and a domain
-summary lookup tab (confirmed independent of the chatbot work, ticketed separately at
-`.scratch/domain-summary-lookup/`). Voice input is proven small and could slot in
-anytime. Shona language support was evaluated via a real spike, found a genuine
-vocabulary defect, and was dropped by the user rather than pursued further. Farm-
-switching UI or a module selector remains deferred - there's only one real farm today.
-Any analysis/dashboarding on top of `query_log` specifically also remains unbuilt (the
-table and write path exist and are now richer with tool-call data; nothing reads that
-table yet beyond the ad-hoc real-usage checks described in section 6).
+batches, not attempted all at once), and suggested follow-up question chips. Voice input
+is proven small and could slot in anytime. Shona language support was evaluated via a
+real spike, found a genuine vocabulary defect, and was dropped by the user rather than
+pursued further. Farm-switching UI or a module selector remains deferred - there's only
+one real farm today. Any analysis/dashboarding on top of `query_log` specifically also
+remains unbuilt (the table and write path exist and are now richer with tool-call data;
+nothing reads that table yet beyond the ad-hoc real-usage checks described in
+section 6).
 
 ## Suggested skills for the next session
 
@@ -929,7 +1153,7 @@ table yet beyond the ad-hoc real-usage checks described in section 6).
   per section 6's sequencing decision) or new capability on `answer_question`; the seam
   and testing-split conventions (the primary `answer_question` black-box seam plus the
   one narrow, explicitly-agreed `resolve_tool_call` exception) are now well-established
-  precedent across four rounds of catalog growth. Note: the dashboard (section 4)
+  precedent across several rounds of catalog growth. Note: the dashboard (section 4)
   deliberately did *not* follow this — no spec, no tickets, no automated tests, by
   explicit user instruction — so don't assume that layer follows the same conventions
   without checking first.
@@ -938,13 +1162,12 @@ table yet beyond the ad-hoc real-usage checks described in section 6).
   real design questions (how history interacts with the existing global date-range
   filter; cache-key/invalidation shape) worth stress-testing before building, the same
   way tier-0/tier-3 were.
-- **mattpocock-skills:to-tickets** — if the domain-summary-lookup ticket
-  (`.scratch/domain-summary-lookup/issues/01-domain-summary-lookup-tab.md`, confirmed
-  independent, not yet built) or voice input (small, proven, independent - see section
-  6) get picked up; neither needs a fresh spec, just implementation.
+- **mattpocock-skills:to-tickets** — if voice input (small, proven, independent - see
+  section 6) gets picked up; doesn't need a fresh spec, just implementation. The
+  domain-summary-lookup ticket from this same list is now built (section 4).
 - **code-review** or **simplify** — `sync/engine.py` (20 near-identical per-table sync
   functions), `chatbot/catalog.py` (a growing list of near-identical `CatalogQuery`
-  entries), and now `chatbot/tools.py` (5 tier-3 tools and growing) are all candidates
+  entries), and now `chatbot/tools.py` (11 tier-3 tools and growing) are all candidates
   for a table-driven refactor now that the pattern is proven several times over.
   Deliberately not done mid-TDD-loop — refactoring is a separate step per the TDD skill.
 - **mattpocock-skills:domain-modeling** — if formalizing the workbook's domain
