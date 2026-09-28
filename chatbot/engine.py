@@ -13,6 +13,7 @@ from chatbot.catalog import (
 )
 from chatbot.data_dictionary import explain_gap
 from chatbot.fallback import llm_extract_intent, validate_llm_intent
+from chatbot.grounding import fallback_narration, is_grounded
 from chatbot.greetings import GREETING_RESPONSE, HELP_RESPONSE, match_tier0
 from chatbot.matcher import match
 from chatbot.ambiguity import has_no_real_subject
@@ -297,7 +298,17 @@ def _phrase(question: str, computed: list) -> str:
         messages=[{"role": "user", "content": prompt}],
         max_tokens=200,
     )
-    return response.choices[0].message.content
+    text = response.choices[0].message.content
+
+    # A deterministic safety net, not another prompt instruction: verify
+    # every number the narration mentions actually traces back to the
+    # computed data before trusting it. See chatbot/grounding.py - the
+    # prompt above already tells the model never to invent a number, but
+    # (the same lesson chatbot/ambiguity.py's docstring already drew about
+    # negative instructions) telling it isn't the same as guaranteeing it.
+    if not is_grounded(text, computed):
+        return fallback_narration(computed)
+    return text
 
 
 def _ensure_query_log_table(conn):
