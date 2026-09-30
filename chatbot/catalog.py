@@ -69,6 +69,27 @@ def active_headcount_asof(conn, cutoff, table, count_col):
     return conn.execute(sql, {"cutoff": cutoff}).fetchone()[0]
 
 
+LATEST_DAILY_LOG_DATE_SQL = """
+    SELECT MAX(d) FROM (
+        SELECT date AS d FROM pig_daily_log
+        UNION ALL SELECT date FROM poultry_daily_log
+    ) all_dates
+"""
+
+
+def latest_daily_log_date(conn):
+    """The real latest logged operational date, across both livestock
+    domains - "today," for every purpose this chatbot treats as relative
+    to real data rather than the calendar date (see chatbot/tools.py's
+    q_headcount/q_mortality_rate docstrings for the same principle applied
+    to tier-3). Shared by chatbot/tools.py's q_headcount and friends
+    (still called _latest_headcount_date there, delegating here) and
+    chatbot/engine.py's relative-period resolution for tier-1/2's
+    feed_cost_split, same dependency-direction reason as
+    active_headcount_asof above."""
+    return conn.execute(LATEST_DAILY_LOG_DATE_SQL).fetchone()[0]
+
+
 DEATHS_IN_WINDOW_SQL = """
     SELECT COALESCE(SUM(deaths), 0) AS total
     FROM {table} WHERE date > %(start)s AND date <= %(end)s

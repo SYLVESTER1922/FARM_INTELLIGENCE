@@ -9,7 +9,7 @@ single, final failure.
 
 import json
 
-from chatbot.matcher import PARAM_EXTRACTORS, MatchResult
+from chatbot.matcher import PARAM_EXTRACTORS, MatchResult, extract_relative_period
 
 
 def _catalog_summary(catalog: list) -> str:
@@ -54,14 +54,28 @@ def llm_extract_intent(question: str, catalog: list, openai_client) -> dict | No
         return None
 
 
-def validate_llm_intent(raw: dict | None, catalog: list, tier1_reason: str) -> MatchResult:
+def validate_llm_intent(raw: dict | None, catalog: list, tier1_reason: str,
+                         question: str | None = None, anchor_date=None) -> MatchResult:
     """`tier1_reason` is preserved when the LLM honestly declines (no
     query_id at all) - that's not an invalid response, just confirmation of
     tier 1's own assessment. `invalid_llm_intent` is reserved for the LLM
     actively naming an unknown query_id - not a query_id that's valid but
     whose required parameter genuinely isn't present in the question (that's
     still a missing_parameter, same root cause as tier 1's own version of it,
-    just confirmed at this tier instead)."""
+    just confirmed at this tier instead).
+
+    `question`/`anchor_date` (both optional, for backward compatibility with
+    the direct unit tests in tests/test_chatbot_fallback_validation.py,
+    which don't need them) exist to catch a real bug found in production:
+    the extraction prompt above asks the LLM to freely state a "period" as
+    a bare Month/Year string, with no anchor to real data - for a relative
+    phrase like "this month" it produced "October 2023" (its own
+    training-era guess at "now"), which then passed straight through
+    extract_period's own Month-Year regex as if it were a real, explicit
+    date. A relative phrase in the ORIGINAL question (never the LLM's own
+    restated "period" value, which by then may already be wrong) is checked
+    first and, if found, resolved deterministically and used instead of
+    ever consulting the LLM's freeform value for it."""
     if not raw or not raw.get("query_id"):
         return MatchResult(query_id=None, reason=tier1_reason)
 
@@ -71,6 +85,12 @@ def validate_llm_intent(raw: dict | None, catalog: list, tier1_reason: str) -> M
 
     params = {}
     for param_name in entry.required_params:
+        if param_name == "period" and question is not None and anchor_date is not None:
+            relative = extract_relative_period(question, anchor_date)
+            if relative is not None:
+                params.update(relative)
+                continue
+
         raw_value = raw.get(param_name)
         if raw_value is None:
             return MatchResult(query_id=None, reason="missing_parameter")

@@ -84,6 +84,27 @@ def test_answer_question_answers_feed_cost_split(tmp_path, db_conn, test_dsn):
     assert answer.query_id == "feed_cost_split"
 
 
+def test_answer_question_resolves_this_month_from_real_anchor_date(tmp_path, db_conn, test_dsn):
+    # a real production bug: "this month" was previously extracted by
+    # tier-2's LLM as an arbitrary, wrong absolute month ("October 2023" -
+    # the model's own training-era guess), not this fixture's real latest
+    # daily-log date (2026-01-06, from the rows above) - so "this month"
+    # must resolve to January 2026, the exact same real period the
+    # explicit-month test above already verifies against the same fixture.
+    _seed(tmp_path, test_dsn)
+
+    answer = answer_question(
+        "how does feed cost split between pigs and chickens this month",
+        farm_code="NIS-001",
+        dsn=test_dsn,
+    )
+
+    assert "50.00" in answer.text or "50.0" in answer.text
+    assert "45.00" in answer.text or "45.0" in answer.text
+    assert answer.query_id == "feed_cost_split"
+    assert answer.failure_reason != "missing_parameter"
+
+
 def test_answer_question_returns_unresolved_for_unrelated_question(tmp_path, db_conn, test_dsn):
     _seed(tmp_path, test_dsn)
 

@@ -1,3 +1,5 @@
+import decimal
+
 import chatbot.engine
 from chatbot.engine import _run_tool_call
 from chatbot.grounding import (
@@ -27,6 +29,23 @@ def test_numbers_in_data_walks_nested_dicts_and_lists():
 
 def test_numbers_in_data_excludes_booleans():
     assert numbers_in_data([{"found": True, "count": 0}]) == {0.0}
+
+
+def test_numbers_in_data_includes_decimal_values():
+    # a real production bug: tier-1 catalog queries return raw
+    # decimal.Decimal columns from psycopg (unlike tier-3 tools, which
+    # float()-cast everything) - the first version of this function only
+    # checked (int, float), silently treating every Decimal as "not a
+    # number," so numbers_in_data came back empty for any tier-1 answer.
+    assert numbers_in_data([{"total_amount": decimal.Decimal("8681.12")}]) == {8681.12}
+
+
+def test_is_grounded_true_for_decimal_backed_data():
+    computed = [{"buyer": "Chikafu Grain Traders", "total_amount": decimal.Decimal("8681.12")}]
+
+    assert is_grounded(
+        "Chikafu Grain Traders is owing you 8681.12.", computed,
+    )
 
 
 def test_numbers_in_text_ignores_digits_inside_known_batch_codes():
@@ -77,6 +96,80 @@ def test_is_grounded_false_when_a_real_number_is_altered():
 
     # off by one from the real data - must not be waved through as "close enough"
     assert not is_grounded("The current headcount is 13.", computed)
+
+
+def test_is_grounded_true_for_a_real_negative_number():
+    # a real production bug: the number regex stripped the leading "-",
+    # so a genuine loss (a negative profit) was read as its positive
+    # counterpart and never matched the real (negative) data value,
+    # wrongly discarding a correct narration.
+    computed = [{"domain": "piggery", "profit": -5563.5}]
+
+    assert is_grounded(
+        "Piggery had a profit of -5563.5 this period.", computed,
+    )
+
+
+def test_is_grounded_false_when_the_sign_is_flipped():
+    computed = [{"profit": -5563.5}]
+
+    # the real failure this exists to catch: a genuinely wrong number
+    # (positive) that happens to share magnitude with the real (negative)
+    # one must still be rejected, not waved through by abs() comparison
+    assert not is_grounded("The profit is 5563.5.", computed)
+
+
+def test_numbers_in_text_captures_leading_minus_sign():
+    computed = [{"total_amount": -25.0}]
+
+    assert numbers_in_text("the amount is -25.0", computed) == {-25.0}
+
+
+def test_numbers_in_text_ignores_a_known_date_reformatted_as_prose():
+    # a real, frequently-triggered production false positive: the LLM
+    # reformatted a known ISO date ("2026-06-17") as prose ("June 17,
+    # 2026") - the literal-substring erasure alone never catches this, so
+    # 2026/17 leaked through as apparently-fabricated numbers roughly 1 in
+    # 5-6 real trials of an ordinary question.
+    computed = [{"window_start": "2026-06-17", "deaths": 0}]
+
+    numbers = numbers_in_text(
+        "There were 0 deaths from June 17, 2026 onward.", computed,
+    )
+
+    assert numbers == {0.0}
+
+
+def test_numbers_in_text_ignores_a_known_date_reformatted_day_first():
+    computed = [{"window_start": "2026-06-17", "deaths": 0}]
+
+    numbers = numbers_in_text(
+        "There were 0 deaths from 17 June 2026 onward.", computed,
+    )
+
+    assert numbers == {0.0}
+
+
+def test_numbers_in_text_still_flags_a_prose_date_that_does_not_match_real_data():
+    # the guard is specific, not a blanket "any Month DD, YYYY is fine" -
+    # a genuinely wrong/fabricated date must still be caught.
+    computed = [{"window_start": "2026-06-17", "deaths": 0}]
+
+    numbers = numbers_in_text(
+        "There were 0 deaths from July 4, 2026 onward.", computed,
+    )
+
+    assert 2026.0 in numbers
+    assert 4.0 in numbers
+
+
+def test_numbers_in_text_still_ignores_a_hyphenated_identifier_suffix():
+    # "-25A" glued onto "PL2" must not be misread as "-25" - the character
+    # immediately before the hyphen ("2") is itself alphanumeric, so the
+    # lookbehind still correctly blocks a match starting there.
+    computed = [{"batch_ref": "SB-PL2-25A"}]
+
+    assert numbers_in_text("batch ref SB-PL2-25A", computed) == set()
 
 
 def test_fallback_narration_mentions_every_top_level_scalar_field():

@@ -31,6 +31,7 @@ from chatbot.catalog import (
     farrowing_records,
     fcr_by_batch,
     health_by_event_type,
+    latest_daily_log_date,
 )
 
 VALID_HEADCOUNT_DOMAINS = {"piggery", "poultry"}
@@ -42,16 +43,8 @@ class InvalidToolArgument(Exception):
     happens to return no rows."""
 
 
-_LATEST_HEADCOUNT_DATE_SQL = """
-    SELECT MAX(d) FROM (
-        SELECT date AS d FROM pig_daily_log
-        UNION ALL SELECT date FROM poultry_daily_log
-    ) all_dates
-"""
-
-
 def _latest_headcount_date(conn) -> datetime.date:
-    return conn.execute(_LATEST_HEADCOUNT_DATE_SQL).fetchone()[0]
+    return latest_daily_log_date(conn)
 
 
 def q_headcount(conn, domain: str | None = None, date_from=None, date_to=None) -> dict:

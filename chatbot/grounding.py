@@ -27,13 +27,20 @@ That asymmetry is the whole point of a safety net; the alternative
 number through.
 """
 
+import decimal
 import re
+
+from chatbot.matcher import MONTH_NAMES
 
 # A number match must not be directly glued to a letter/digit on either
 # side - excludes a digit run embedded in an identifier (the "01" in
 # "PIG-B01") while still matching a real number followed by punctuation, a
-# unit with a space before it ("67.9 kg"), a % sign, or nothing at all.
-_NUMBER_RE = re.compile(r"(?<![A-Za-z0-9])\d[\d,]*\.?\d*(?![A-Za-z0-9])")
+# unit with a space before it ("67.9 kg"), a % sign, or nothing at all. An
+# optional leading "-" is part of the match (a real loss/negative figure,
+# e.g. profit) - the lookbehind is still checked at the position *before*
+# that "-", so "-25" glued onto an identifier ("PL2-25A") still correctly
+# fails to match (the character before "-" there is "2", not a boundary).
+_NUMBER_RE = re.compile(r"(?<![A-Za-z0-9])-?\d[\d,]*\.?\d*(?![A-Za-z0-9])")
 
 
 def _walk_leaves(obj):
@@ -73,12 +80,24 @@ def numbers_in_data(computed: list) -> set:
     """Every numeric leaf value anywhere in `computed` (nested dicts/lists
     included - e.g. a tool's per-batch or per-buyer breakdown), rounded to
     tame floating-point noise. Booleans excluded (Python's bool is an int
-    subtype, but "true"/"false" narration was never a numeric claim)."""
+    subtype, but "true"/"false" narration was never a numeric claim).
+
+    Includes decimal.Decimal - a real bug found in production: tier-1
+    catalog queries return raw Decimal values straight from psycopg
+    (unlike tier-3 tools, which explicitly float()-cast everything), and
+    the first version of this function only checked (int, float), silently
+    treating every Decimal as "not a number." That meant numbers_in_data
+    came back empty for any tier-1 catalog answer with a numeric column,
+    so every number the narration then mentioned was flagged as
+    "ungrounded" and the answer fell back to fallback_narration()
+    unconditionally - not just on a genuine mismatch. Caught by direct
+    production reproduction (a real live-answer report), not by this
+    module's own tests, which had only ever exercised plain-float data."""
     numbers = set()
     for leaf in _walk_leaves(computed):
         if isinstance(leaf, bool):
             continue
-        if isinstance(leaf, (int, float)):
+        if isinstance(leaf, (int, float, decimal.Decimal)):
             numbers.add(round(float(leaf), 6))
     return numbers
 
@@ -100,11 +119,52 @@ def _erase_known_strings(text: str, known_strings: set) -> str:
     return text
 
 
+_ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_PROSE_DATE_PATTERNS = (
+    re.compile(r"\b(" + "|".join(MONTH_NAMES) + r")\s+(\d{1,2}),?\s+(\d{4})\b", re.IGNORECASE),
+    re.compile(r"\b(\d{1,2})\s+(" + "|".join(MONTH_NAMES) + r")\s+(\d{4})\b", re.IGNORECASE),
+)
+
+
+def _erase_reformatted_known_dates(text: str, known_strings: set) -> str:
+    """A known ISO date value ("2026-06-17") re-rendered by the LLM as
+    prose ("June 17, 2026") never matches _erase_known_strings' literal
+    substring check, so its digits leaked through as apparently-fabricated
+    numbers - a real, frequently-triggered false positive found in
+    production (roughly 1 in 5-6 real trials of an ordinary question with
+    a date field), not a rare edge case. Detects a Month-DD-YYYY or
+    DD-Month-YYYY span, converts it to ISO, and erases that whole span only
+    if it matches a real known date from the data - never a blanket "day/
+    month/year-shaped numbers are always fine" allowance, which would also
+    wave through a genuinely fabricated number that happens to coincide
+    with a day-of-month or a year."""
+    known_dates = {s for s in known_strings if _ISO_DATE_RE.match(s)}
+    if not known_dates:
+        return text
+
+    def _replace_mdy(m):
+        month, day, year = MONTH_NAMES[m.group(1).lower()], int(m.group(2)), int(m.group(3))
+        iso = f"{year:04d}-{month:02d}-{day:02d}"
+        return " " if iso in known_dates else m.group(0)
+
+    def _replace_dmy(m):
+        day, month, year = int(m.group(1)), MONTH_NAMES[m.group(2).lower()], int(m.group(3))
+        iso = f"{year:04d}-{month:02d}-{day:02d}"
+        return " " if iso in known_dates else m.group(0)
+
+    text = _PROSE_DATE_PATTERNS[0].sub(_replace_mdy, text)
+    text = _PROSE_DATE_PATTERNS[1].sub(_replace_dmy, text)
+    return text
+
+
 def numbers_in_text(text: str, computed: list) -> set:
     """Freestanding numeric tokens in `text`, after erasing every known
-    string value from `computed` (see _erase_known_strings) so identifiers
-    and dates don't get misread as bare numbers."""
-    erased = _erase_known_strings(text, _string_leaves(computed))
+    string value from `computed` (see _erase_known_strings) and every
+    known date reformatted as prose (see _erase_reformatted_known_dates)
+    so identifiers and dates don't get misread as bare numbers."""
+    known_strings = _string_leaves(computed)
+    erased = _erase_known_strings(text, known_strings)
+    erased = _erase_reformatted_known_dates(erased, known_strings)
     numbers = set()
     for match in _NUMBER_RE.findall(erased):
         cleaned = match.replace(",", "").strip(".")

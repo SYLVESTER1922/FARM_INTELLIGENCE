@@ -10,12 +10,13 @@ from chatbot.catalog import (
     PIGGERY_DISEASE_OUTBREAK_DATE_COLUMN,
     POULTRY_MORTALITY_SPIKE_DATE_COLUMN,
     date_filter_sql,
+    latest_daily_log_date,
 )
 from chatbot.data_dictionary import explain_gap
 from chatbot.fallback import llm_extract_intent, validate_llm_intent
 from chatbot.grounding import fallback_narration, is_grounded
 from chatbot.greetings import GREETING_RESPONSE, HELP_RESPONSE, match_tier0
-from chatbot.matcher import match
+from chatbot.matcher import match, mentions_relative_period
 from chatbot.ambiguity import has_no_real_subject
 from chatbot.tools import (
     TOOL_DOMAINS,
@@ -115,14 +116,37 @@ def answer_question(question: str, farm_code: str, dsn: str,
         conn.close()
         return answer
 
-    result = match(question, CATALOG)
+    # The real latest logged operational date - "today," for resolving a
+    # relative period phrase ("this month") deterministically, never via
+    # the calendar date or an LLM's own guess. See
+    # chatbot/matcher.py's extract_relative_period for the real production
+    # bug this exists to fix. Only looked up when the question could
+    # actually use it (mentions_relative_period) - most questions never
+    # mention a relative period. Still wrapped defensively: "this month"
+    # can appear in a question that has nothing to do with
+    # feed_cost_split (the only catalog entry that actually needs a
+    # period) - e.g. a tier-3 breeding question - and every real
+    # production database has pig_daily_log/poultry_daily_log, but a
+    # minimal test fixture for an unrelated tool might not; either way,
+    # both match() and validate_llm_intent() already treat None as "can't
+    # resolve a relative period," falling back to their pre-existing
+    # missing_parameter path, so failing safe here is always correct.
+    anchor_date = None
+    if mentions_relative_period(question):
+        try:
+            anchor_date = latest_daily_log_date(conn)
+        except psycopg.errors.UndefinedTable:
+            pass
+
+    result = match(question, CATALOG, anchor_date=anchor_date)
     intent_source = "deterministic"
 
     if result.query_id is None:
         # tier 1 missed - one LLM attempt before giving up, no retry
         tier1_reason = result.reason
         raw = llm_extract_intent(question, CATALOG, _openai_client())
-        result = validate_llm_intent(raw, CATALOG, tier1_reason)
+        result = validate_llm_intent(raw, CATALOG, tier1_reason,
+                                      question=question, anchor_date=anchor_date)
         intent_source = "llm_fallback"
 
     if result.reason == "missing_parameter":
