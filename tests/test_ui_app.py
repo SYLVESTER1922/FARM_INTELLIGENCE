@@ -1,8 +1,24 @@
+import datetime
+import os
+import random
+
 import ui.app
+from chatbot.catalog import CATALOG
+from chatbot.matcher import match
 from sync.engine import sync_workbook_to_supabase
 from tests.fixtures import base_fixture
 from tests.workbook_builder import build_workbook
-from ui.app import GENERIC_ERROR_MESSAGE, handle_message
+from ui.app import (
+    GENERIC_ERROR_MESSAGE,
+    _chat_respond,
+    _quick_lookup,
+    _replay_search,
+    _transcribe_audio,
+    export_chat,
+    export_chat_text,
+    get_followup_suggestions,
+    handle_message,
+)
 
 
 def _feed_cost_fixture():
@@ -93,3 +109,213 @@ def test_handle_message_returns_generic_message_when_answer_question_raises(monk
     text = handle_message("how does feed cost split between pigs and chickens")
 
     assert text == GENERIC_ERROR_MESSAGE
+
+
+# ---------------------------------------------------------------------------
+# Chat page redesign (navy/gold, 1:3:1) - the new logic added for it.
+# chatbot/ itself and handle_message/_chat_fn above are unchanged; these
+# tests cover only the new ui/app.py functions the redesign introduced.
+# ---------------------------------------------------------------------------
+
+def test_followup_pool_has_one_phrase_per_catalog_entry():
+    pool = ui.app._followup_pool()
+
+    assert len(pool) == len(CATALOG)
+
+
+def test_followup_pool_appends_this_month_only_to_period_requiring_entries():
+    pool = ui.app._followup_pool()
+
+    period_entries = [e for e in CATALOG if "period" in e.required_params]
+    for entry in period_entries:
+        assert any(p.startswith(entry.phrases[0]) and p.endswith("this month") for p in pool)
+
+    no_period_entries = [e for e in CATALOG if "period" not in e.required_params]
+    for entry in no_period_entries:
+        assert entry.phrases[0] in pool
+
+
+def test_get_followup_suggestions_returns_requested_count_with_no_duplicates():
+    suggestions = get_followup_suggestions(count=3, rng=random.Random(42))
+
+    assert len(suggestions) == 3
+    assert len(set(suggestions)) == 3
+
+
+def test_get_followup_suggestions_caps_at_pool_size():
+    # never crash asking for more suggestions than the catalog has entries
+    suggestions = get_followup_suggestions(count=99, rng=random.Random(1))
+
+    assert len(suggestions) == len(CATALOG)
+
+
+def test_every_followup_suggestion_resolves_to_a_real_catalog_entry():
+    # the user's own explicit requirement: every suggestion is answerable -
+    # verified at chatbot/matcher.py's deterministic tier-1 seam (a pure
+    # function, no DB needed) rather than assumed. A real anchor date
+    # (any date works - only "this month"'s bounds depend on it, not
+    # whether it resolves at all) makes the period-requiring entry's
+    # appended "this month" resolve too, matching how it will actually be
+    # clicked in production, not just the entries that need no period.
+    anchor = datetime.date(2026, 9, 15)
+    pool = ui.app._followup_pool()
+
+    for phrase in pool:
+        result = match(phrase, CATALOG, anchor_date=anchor)
+        assert result.query_id is not None, phrase
+        assert result.reason is None, phrase
+
+
+def test_export_chat_text_formats_every_message():
+    history = [
+        {"role": "user", "content": "how many pigs do we have?"},
+        {"role": "assistant", "content": "You have 12 pigs."},
+    ]
+
+    text = export_chat_text(history)
+
+    assert "USER:" in text
+    assert "how many pigs do we have?" in text
+    assert "ASSISTANT:" in text
+    assert "You have 12 pigs." in text
+
+
+def test_export_chat_returns_none_for_empty_history():
+    assert export_chat([]) is None
+    assert export_chat(None) is None
+
+
+def test_export_chat_writes_a_real_downloadable_file():
+    history = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}]
+
+    path = export_chat(history)
+
+    try:
+        assert path is not None
+        with open(path) as f:
+            content = f.read()
+        assert "hello" in content
+        assert "hi" in content
+    finally:
+        os.remove(path)
+
+
+def test_chat_respond_appends_to_history_and_records_search(monkeypatch):
+    monkeypatch.setattr(ui.app, "handle_message", lambda q, df, dt: f"answer to: {q}")
+
+    chat_history, search_history, search_order, cleared_msg, dropdown_update, *fups = \
+        _chat_respond("how many pigs?", [], {}, [], "", "")
+
+    assert chat_history == [
+        {"role": "user", "content": "how many pigs?"},
+        {"role": "assistant", "content": "answer to: how many pigs?"},
+    ]
+    assert search_history == {"how many pigs?": "answer to: how many pigs?"}
+    assert search_order == ["how many pigs?"]
+    assert cleared_msg == ""
+    assert len(fups) == 3
+
+
+def test_chat_respond_moves_a_repeated_question_to_the_front_without_duplicating(monkeypatch):
+    monkeypatch.setattr(ui.app, "handle_message", lambda q, df, dt: "an answer")
+
+    _, _, order1, *_ = _chat_respond("q1", [], {}, [], "", "")
+    _, _, order2, *_ = _chat_respond("q2", [], {}, order1, "", "")
+    _, search_history, order3, *_ = _chat_respond("q1", [], {}, order2, "", "")
+
+    assert order3 == ["q1", "q2"]
+    assert search_history == {"q1": "an answer"}
+
+
+def test_chat_respond_caps_recent_searches_at_the_limit(monkeypatch):
+    monkeypatch.setattr(ui.app, "handle_message", lambda q, df, dt: "a")
+
+    order = []
+    for i in range(ui.app.RECENT_SEARCHES_LIMIT + 5):
+        _, _, order, *_ = _chat_respond(f"q{i}", [], {}, order, "", "")
+
+    assert len(order) == ui.app.RECENT_SEARCHES_LIMIT
+    assert order[0] == f"q{ui.app.RECENT_SEARCHES_LIMIT + 4}"
+
+
+def test_chat_respond_ignores_a_blank_message(monkeypatch):
+    monkeypatch.setattr(ui.app, "handle_message", lambda q, df, dt: "should not be called")
+
+    chat_history, search_history, search_order, *_ = _chat_respond("   ", [], {}, [], "", "")
+
+    assert chat_history == []
+    assert search_history == {}
+    assert search_order == []
+
+
+def test_replay_search_appends_the_stored_answer_without_recomputing():
+    search_history = {"how many pigs?": "You have 12 pigs."}
+
+    chat_history, dropdown_update = _replay_search("how many pigs?", [], search_history)
+
+    assert chat_history == [
+        {"role": "user", "content": "how many pigs?"},
+        {"role": "assistant", "content": "You have 12 pigs."},
+    ]
+
+
+def test_replay_search_is_a_noop_for_an_unknown_selection():
+    chat_history, _ = _replay_search("never asked this", [{"existing": "entry"}], {})
+
+    assert chat_history == [{"existing": "entry"}]
+
+
+def test_transcribe_audio_returns_empty_string_for_no_path():
+    assert _transcribe_audio(None) == ""
+    assert _transcribe_audio("") == ""
+
+
+def test_transcribe_audio_returns_empty_string_when_the_api_call_fails(monkeypatch, tmp_path):
+    audio_path = tmp_path / "clip.wav"
+    audio_path.write_bytes(b"not really audio")
+
+    class _BoomClient:
+        class audio:
+            class transcriptions:
+                @staticmethod
+                def create(**kwargs):
+                    raise RuntimeError("simulated transcription failure")
+
+    monkeypatch.setattr(ui.app.openai, "OpenAI", lambda: _BoomClient())
+
+    assert _transcribe_audio(str(audio_path)) == ""
+
+
+def test_transcribe_audio_returns_the_transcribed_text(monkeypatch, tmp_path):
+    audio_path = tmp_path / "clip.wav"
+    audio_path.write_bytes(b"not really audio")
+
+    class _FakeTranscript:
+        text = "  how many pigs do we have?  "
+
+    class _FakeClient:
+        class audio:
+            class transcriptions:
+                @staticmethod
+                def create(**kwargs):
+                    return _FakeTranscript()
+
+    monkeypatch.setattr(ui.app.openai, "OpenAI", lambda: _FakeClient())
+
+    assert _transcribe_audio(str(audio_path)) == "how many pigs do we have?"
+
+
+def test_quick_lookup_debtor_reports_could_not_connect_when_dsn_missing(monkeypatch):
+    monkeypatch.delenv("FARM_INTELLIGENCE_DB_DSN", raising=False)
+
+    result = _quick_lookup("Debtor", "", "", "")
+
+    assert "Could not connect" in result
+
+
+def test_quick_lookup_batch_prompts_for_a_value_when_blank(monkeypatch, test_dsn):
+    monkeypatch.setenv("FARM_INTELLIGENCE_DB_DSN", test_dsn)
+
+    result = _quick_lookup("Batch", "   ", "", "")
+
+    assert result == "Enter a batch to look up."

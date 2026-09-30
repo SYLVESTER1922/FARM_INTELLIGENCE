@@ -15,14 +15,18 @@ the earlier dashboard work.
 import base64
 import datetime
 import os
+import random
 import time
 
 import gradio as gr
+import openai
 import psycopg
 
+from chatbot.catalog import CATALOG
 from chatbot.engine import answer_question
 from sync.engine import sync_sheet_to_supabase
 from ui import charts, queries
+from ui import theme as chat_theme
 
 FARM_CODE = "NIS-001"  # single real farm today; multi-farm UI is deferred
 GENERIC_ERROR_MESSAGE = "Something went wrong - please try again."
@@ -36,19 +40,24 @@ SHEETS_SYNC_TTL_SECONDS = 300
 _sync_state = {"last_synced_at": 0.0, "last_error": None}
 
 _LOGO_PATH = os.path.join(os.path.dirname(__file__), "..", "assets", "netrisyl-logo.png")
+_NI_LOGO_PATH = os.path.join(os.path.dirname(__file__), "..", "NI_logo.png")
+
+
+def _image_data_uri(path: str) -> str:
+    """Base64-embedded inline, not a linked external file - so an image
+    always renders regardless of hosting/static-file setup, the same
+    pattern used by the Savanna QSR app. Returns "" if the asset is
+    missing, so a missing image degrades to no image rather than a broken
+    page."""
+    if not os.path.exists(path):
+        return ""
+    with open(path, "rb") as f:
+        encoded = base64.b64encode(f.read()).decode("ascii")
+    return f"data:image/png;base64,{encoded}"
 
 
 def _logo_data_uri() -> str:
-    """Base64-embedded inline, not a linked external file - so the logo
-    always renders regardless of hosting/static-file setup, the same
-    pattern used by the Savanna QSR app. Returns "" if the asset is
-    missing, so a missing logo degrades to no image rather than a broken
-    page."""
-    if not os.path.exists(_LOGO_PATH):
-        return ""
-    with open(_LOGO_PATH, "rb") as f:
-        encoded = base64.b64encode(f.read()).decode("ascii")
-    return f"data:image/png;base64,{encoded}"
+    return _image_data_uri(_LOGO_PATH)
 
 
 def _parse_date(s):
@@ -133,6 +142,248 @@ def _chat_fn(message: str, history: list, date_from_str: str, date_to_str: str) 
     # additional_inputs - chat always answers within whatever range is
     # currently selected, matching Savanna's structure.
     return handle_message(message, date_from_str, date_to_str)
+
+
+# ---------------------------------------------------------------------------
+# Chat page (navy/gold redesign) - session-scoped state via gr.State only,
+# never a module-level global. github.com/SYLVESTER1922/Devreotes--GraphRag's
+# app.py (the layout/theme reference, read directly) keeps its own
+# search_history/history_order/current_lang as module-level globals, which
+# would leak one visitor's chat history into another's on this app - every
+# piece of per-visitor state here is threaded through as a gr.State value
+# instead, passed in and returned explicitly by every handler below.
+# ---------------------------------------------------------------------------
+
+RECENT_SEARCHES_LIMIT = 10
+
+
+def _followup_pool() -> list:
+    """One example phrase per chatbot/catalog.py entry - every one
+    guaranteed to resolve via tier-1/tier-2's deterministic catalog match
+    (never a tier-3 guess), so every suggested follow-up is genuinely
+    answerable, per the user's own requirement. feed_cost_split is the one
+    entry that also needs a period; " this month" is appended so a single
+    click resolves cleanly via the relative-period fix (ticket 28) instead
+    of landing on a clarifying question."""
+    pool = []
+    for entry in CATALOG:
+        phrase = entry.phrases[0]
+        if "period" in entry.required_params:
+            phrase = f"{phrase} this month"
+        pool.append(phrase)
+    return pool
+
+
+def get_followup_suggestions(count: int = 3, rng=None) -> list:
+    """A fresh random draw of `count` catalog-backed phrasings, so the
+    suggestions vary a little between turns rather than always showing the
+    same three. `rng` (a random.Random instance) is accepted for
+    deterministic testing; defaults to the `random` module itself."""
+    rng = rng or random
+    pool = _followup_pool()
+    return rng.sample(pool, min(count, len(pool)))
+
+
+def _transcribe_audio(audio_path: str | None) -> str:
+    """Whisper voice input - the same `whisper-1` pattern already proven in
+    Lobels Stores Intelligence (read directly, per the handoff doc's
+    earlier research) and in the Devreotes-GraphRag reference read for this
+    task. Never raises: a transcription failure degrades to an empty
+    string (the caller then treats it exactly like an empty typed message),
+    not a broken page."""
+    if not audio_path:
+        return ""
+    try:
+        client = openai.OpenAI()
+        with open(audio_path, "rb") as f:
+            resp = client.audio.transcriptions.create(model="whisper-1", file=f)
+        return (resp.text or "").strip()
+    except Exception:
+        return ""
+
+
+def export_chat_text(history: list) -> str:
+    """Plain-text transcript of `history` (gr.Chatbot's own list of
+    {"role","content"} message dicts) - the actual file-writing (a temp
+    path for gr.File to serve) is kept in export_chat below, so this pure
+    part is directly testable without touching the filesystem."""
+    lines = ["NETRISYL FARM INTELLIGENCE - Chat Export", "=" * 44]
+    for m in history or []:
+        if isinstance(m, dict):
+            lines.append(f"\n{m.get('role', '').upper()}:\n{m.get('content', '')}")
+    return "\n".join(lines)
+
+
+def export_chat(history: list):
+    if not history:
+        return None
+    path = "/tmp/farm_intelligence_chat_export.txt"
+    with open(path, "w") as f:
+        f.write(export_chat_text(history))
+    return path
+
+
+def farm_snapshot_markdown(date_from=None, date_to=None) -> str:
+    """A compact 2-line read of the same four headline cards the Dashboard
+    page already computes (queries.fetch_dashboard_stats) - reused, not
+    duplicated, for the Chat page's left-sidebar snapshot."""
+    try:
+        conn = _dashboard_conn()
+        cards = queries.fetch_dashboard_stats(conn, date_from=date_from, date_to=date_to)
+    except Exception as e:
+        return f"*Could not load farm snapshot: {str(e)[:150]}*"
+    return "  \n".join(f"{c['icon']} **{c['value']}** {c['label']}" for c in cards)
+
+
+def about_farm_html() -> str:
+    try:
+        conn = _dashboard_conn()
+        profile = queries.fetch_farm_profile(conn)
+    except Exception as e:
+        return f'<div class="np-card">Could not load farm profile: {str(e)[:150]}</div>'
+
+    if not profile:
+        return '<div class="np-card">No farm profile configured.</div>'
+
+    modules = [name for name, active in (
+        ("Piggery", profile["module_piggery_active"]),
+        ("Poultry", profile["module_poultry_active"]),
+        ("Crops", profile["module_crops_active"]),
+    ) if active]
+
+    return (
+        '<div class="np-card">'
+        f'<strong>{profile["farm_name"]}</strong><br>'
+        f'{profile["region_district"]}<br><br>'
+        f'Active modules: <strong>{", ".join(modules) if modules else "None"}</strong><br>'
+        f'Total area: <strong>{profile["total_hectares"]} ha</strong>'
+        '</div>'
+    )
+
+
+def top_alerts_html(date_from=None, date_to=None) -> str:
+    """A compact rendering of the exact same three planted findings the
+    Reports page's Findings & Alerts section already shows
+    (queries.fetch_findings) - reused, not duplicated, just laid out for a
+    narrow sidebar instead of full-width cards."""
+    try:
+        conn = _dashboard_conn()
+        f = queries.fetch_findings(conn, date_from=date_from, date_to=date_to)
+    except Exception as e:
+        return f'<div class="np-alert">Could not load alerts: {str(e)[:150]}</div>'
+
+    alerts = []
+    poultry, piggery, debtor = f["poultry_mortality_spike"], f["piggery_disease_outbreak"], f["crop_debtor"]
+    if poultry:
+        alerts.append(f"🐔 Batch <b>{poultry['batch_code']}</b>: "
+                       f"<b>{poultry['mortality_pct']}%</b> mortality")
+    if piggery:
+        alerts.append(f"🐖 Batch <b>{piggery['batch_ref']}</b>: "
+                       f"<b>{piggery['treatment_count']}</b> treatments")
+    if debtor:
+        alerts.append(f"🌾 <b>{debtor['buyer']}</b> owes "
+                       f"<b>${float(debtor['total_amount']):.2f}</b>")
+    if not alerts:
+        return '<div class="np-alert">No active alerts.</div>'
+    return "".join(f'<div class="np-alert">{a}</div>' for a in alerts)
+
+
+def _quick_lookup(kind: str, value: str, date_from_str: str = "", date_to_str: str = "") -> str:
+    """Backs the Chat page's Quick Lookup widget - Pen and Batch hit the
+    two new ui/queries.py functions; Debtor reuses fetch_debtors directly
+    (no new query needed, it already lists every outstanding payment)."""
+    try:
+        conn = _dashboard_conn()
+    except Exception as e:
+        return f"Could not connect: {str(e)[:150]}"
+
+    if kind == "Debtor":
+        date_from, date_to = _parse_date(date_from_str), _parse_date(date_to_str)
+        try:
+            debtors = queries.fetch_debtors(conn, date_from=date_from, date_to=date_to)
+        except Exception as e:
+            return f"Could not load debtors: {str(e)[:150]}"
+        if not debtors:
+            return "No outstanding debtors."
+        return "\n\n".join(
+            f"**{d['buyer']}** owes **${float(d['total_amount']):.2f}** for "
+            f"{d['product']} (batch {d['batch_ref']}, {d['date'].isoformat()})"
+            for d in debtors
+        )
+
+    if not value or not value.strip():
+        return f"Enter a {kind.lower()} to look up."
+    value = value.strip()
+
+    if kind == "Pen":
+        try:
+            rows = queries.fetch_pen_summary(conn, value)
+        except Exception as e:
+            return f"Could not load pen: {str(e)[:150]}"
+        if not rows:
+            return f"No batches found for pen '{value}'."
+        return "\n\n".join(
+            f"**{r['batch_code']}** ({r['breed']}, {r['status']}) - "
+            f"headcount **{r['headcount']}** as of {r['latest_date']}"
+            if r["latest_date"] else f"**{r['batch_code']}** ({r['breed']}, {r['status']})"
+            for r in rows
+        )
+
+    # kind == "Batch"
+    try:
+        summary = queries.fetch_batch_summary(conn, value)
+    except Exception as e:
+        return f"Could not load batch: {str(e)[:150]}"
+    if not summary:
+        return f"No batch found matching '{value}'."
+    weight_line = (
+        f"**Avg weight:** {summary['avg_weight']} {summary['weight_unit']}\n\n"
+        if summary["avg_weight"] is not None else ""
+    )
+    return (
+        f"**{summary['batch_code']}** ({summary['domain']}, {summary['breed']})\n\n"
+        f"**Location:** {summary['location']} | **Status:** {summary['status']}\n\n"
+        f"**Headcount:** {summary['headcount']} as of {summary['latest_date']}\n\n"
+        f"{weight_line}"
+        f"**Target date:** {summary['target_date']}"
+    )
+
+
+def _chat_respond(message, chat_history, search_history, search_order, date_from_str, date_to_str):
+    """The Chat page's core turn: calls the unchanged handle_message, then
+    threads the three pieces of session state back out explicitly
+    (chat_history, search_history, search_order) rather than mutating a
+    module-level global - see the section docstring above."""
+    if not message or not message.strip():
+        return (chat_history, search_history, search_order, "",
+                gr.update(choices=search_order), *get_followup_suggestions())
+
+    answer = handle_message(message, date_from_str, date_to_str)
+    chat_history = (chat_history or []) + [
+        {"role": "user", "content": message},
+        {"role": "assistant", "content": answer},
+    ]
+
+    search_history = dict(search_history or {})
+    search_history[message] = answer
+    search_order = [q for q in (search_order or []) if q != message]
+    search_order.insert(0, message)
+    search_order = search_order[:RECENT_SEARCHES_LIMIT]
+
+    return (chat_history, search_history, search_order, "",
+            gr.update(choices=search_order), *get_followup_suggestions())
+
+
+def _replay_search(selected, chat_history, search_history):
+    """Replays a past exchange from `search_history` (the answer was
+    already computed once - clicking a recent search re-shows it, it
+    doesn't re-query the answer engine)."""
+    if selected and search_history and selected in search_history:
+        chat_history = (chat_history or []) + [
+            {"role": "user", "content": selected},
+            {"role": "assistant", "content": search_history[selected]},
+        ]
+    return chat_history, gr.update(value=None)
 
 
 # ---------------------------------------------------------------------------
@@ -778,14 +1029,116 @@ def build_interface() -> gr.Blocks:
                         dash_fcr_plot = gr.Plot(label="", show_label=False)
                 pages.append(page_dashboard)
 
-                # ---- Chat --------------------------------------------------
-                with gr.Column(visible=False) as page_chat:
-                    gr.ChatInterface(
-                        fn=_chat_fn,
-                        title=None,
-                        description="Ask a question about your farm's piggery, poultry, or crops data. "
-                                     "Answers respect the date range selected above.",
-                        additional_inputs=[date_from_box, date_to_box],
+                # ---- Chat (navy/gold, 1:3:1 three-column layout) ------------
+                with gr.Column(visible=False, elem_id="np-chat") as page_chat:
+                    gr.HTML(chat_theme.chat_header_html(_image_data_uri(_NI_LOGO_PATH)))
+
+                    # Session-scoped state only - see the docstring above
+                    # _followup_pool for why this is never a module global.
+                    chat_state = gr.State([])
+                    search_history_state = gr.State({})
+                    search_order_state = gr.State([])
+
+                    with gr.Row():
+                        # LEFT SIDEBAR - farm snapshot, recent searches, export
+                        with gr.Column(scale=1, min_width=220):
+                            gr.HTML('<div class="eyebrow">Farm Snapshot</div>')
+                            snapshot_md = gr.Markdown("Loading...")
+                            gr.HTML('<div class="eyebrow">Recent Searches</div>')
+                            history_dropdown = gr.Dropdown(
+                                choices=[], label="Click to replay",
+                                interactive=True, allow_custom_value=False,
+                                show_label=False,
+                            )
+                            gr.HTML('<div class="eyebrow">Tools</div>')
+                            export_btn = gr.Button("📥 Export Chat", size="sm", variant="secondary")
+                            export_file = gr.File(label="Download", visible=False)
+
+                        # CENTER - chat, input row, follow-ups
+                        with gr.Column(scale=3):
+                            chatbot = gr.Chatbot(height=440, show_label=False)
+                            with gr.Row():
+                                chat_msg = gr.Textbox(
+                                    placeholder="Ask about your farm's piggery, poultry, or "
+                                                 "crops data (or use 🎤)...",
+                                    show_label=False, scale=5,
+                                )
+                                chat_mic = gr.Audio(
+                                    sources=["microphone"], type="filepath",
+                                    label="🎤", scale=1, min_width=90,
+                                )
+                                chat_send_btn = gr.Button("Send", scale=1, variant="primary")
+                            gr.HTML('<div class="eyebrow">💡 Suggested follow-ups</div>')
+                            with gr.Row():
+                                _initial_fups = get_followup_suggestions()
+                                fup1 = gr.Button(_initial_fups[0], size="sm")
+                                fup2 = gr.Button(_initial_fups[1], size="sm")
+                                fup3 = gr.Button(_initial_fups[2], size="sm")
+
+                        # RIGHT SIDEBAR - about the farm, quick lookup, alerts
+                        with gr.Column(scale=1, min_width=220):
+                            gr.HTML('<div class="eyebrow">About the Farm</div>')
+                            about_html = gr.HTML()
+                            gr.HTML('<div class="eyebrow">Quick Lookup</div>')
+                            lookup_kind = gr.Radio(
+                                choices=["Pen", "Batch", "Debtor"], value="Batch",
+                                show_label=False,
+                            )
+                            lookup_value = gr.Textbox(
+                                placeholder="e.g. PIG-B01 or Pen 1", show_label=False,
+                            )
+                            lookup_btn = gr.Button("Look Up", size="sm", variant="secondary")
+                            lookup_result = gr.Markdown("")
+                            gr.HTML('<div class="eyebrow">Top Alerts</div>')
+                            alerts_html = gr.HTML()
+
+                    _chat_turn_inputs = [chat_msg, chat_state, search_history_state,
+                                          search_order_state, date_from_box, date_to_box]
+                    _chat_turn_outputs = [chat_state, search_history_state, search_order_state,
+                                           chat_msg, history_dropdown, fup1, fup2, fup3]
+
+                    chat_msg.submit(
+                        _chat_respond, _chat_turn_inputs, _chat_turn_outputs,
+                    ).then(lambda h: h, [chat_state], [chatbot])
+                    chat_send_btn.click(
+                        _chat_respond, _chat_turn_inputs, _chat_turn_outputs,
+                    ).then(lambda h: h, [chat_state], [chatbot])
+
+                    def _voice_respond(audio_path, ch, sh, so, dfs, dts):
+                        text = _transcribe_audio(audio_path)
+                        result = _chat_respond(text, ch, sh, so, dfs, dts)
+                        return (*result, None)
+
+                    chat_mic.stop_recording(
+                        _voice_respond,
+                        [chat_mic, chat_state, search_history_state, search_order_state,
+                         date_from_box, date_to_box],
+                        [chat_state, search_history_state, search_order_state, chat_msg,
+                         history_dropdown, fup1, fup2, fup3, chat_mic],
+                    ).then(lambda h: h, [chat_state], [chatbot])
+
+                    for fup_btn in (fup1, fup2, fup3):
+                        fup_btn.click(
+                            _chat_respond,
+                            [fup_btn, chat_state, search_history_state, search_order_state,
+                             date_from_box, date_to_box],
+                            _chat_turn_outputs,
+                        ).then(lambda h: h, [chat_state], [chatbot])
+
+                    history_dropdown.change(
+                        _replay_search,
+                        [history_dropdown, chat_state, search_history_state],
+                        [chat_state, history_dropdown],
+                    ).then(lambda h: h, [chat_state], [chatbot])
+
+                    def _handle_export(history):
+                        path = export_chat(history)
+                        return gr.update(value=path, visible=True) if path else gr.update(visible=False)
+
+                    export_btn.click(_handle_export, [chat_state], [export_file])
+                    lookup_btn.click(
+                        _quick_lookup, [lookup_kind, lookup_value, date_from_box, date_to_box],
+                        [lookup_result],
                     )
                 pages.append(page_chat)
 
@@ -885,6 +1238,7 @@ def build_interface() -> gr.Blocks:
             domain_summary_html,
             settings_info,
             sync_status_md,
+            snapshot_md, about_html, alerts_html,
         ]
 
         def load_all(date_from_str="", date_to_str="", domain="piggery"):
@@ -909,6 +1263,9 @@ def build_interface() -> gr.Blocks:
             breeding_info, breeding_rows = load_breeding(date_from, date_to)
             domain_summary = load_domain_summary(domain, date_from, date_to)
             settings_info = load_settings()
+            snapshot = farm_snapshot_markdown(date_from, date_to)
+            about = about_farm_html()
+            alerts = top_alerts_html(date_from, date_to)
 
             return (
                 stats_html,
@@ -923,6 +1280,7 @@ def build_interface() -> gr.Blocks:
                 domain_summary,
                 settings_info,
                 sync_status_text(),
+                snapshot, about, alerts,
             )
 
         def refresh_and_load_all(date_from_str="", date_to_str="", domain="piggery"):
@@ -991,5 +1349,5 @@ if __name__ == "__main__":
         server_name="0.0.0.0",
         server_port=int(os.environ.get("PORT", 7860)),
         theme=theme,
-        css=CUSTOM_CSS,
+        css=CUSTOM_CSS + chat_theme.CHAT_NAVY_CSS,
     )

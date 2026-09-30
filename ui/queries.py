@@ -432,6 +432,81 @@ def fetch_farm_profile(conn):
 
 
 # ---------------------------------------------------------------------------
+# Chat page's "Quick Lookup" widget - pen and batch, a fast at-a-glance
+# summary distinct from asking the chatbot a full question. Debtor lookup
+# needs no new query - it reuses fetch_debtors above directly.
+# ---------------------------------------------------------------------------
+
+PEN_SUMMARY_SQL = """
+    SELECT b.batch_code, b.breed, b.status, b.start_date,
+           b.target_market_date AS target_date,
+           lc.date AS latest_date, lc.closing_count AS headcount
+    FROM pig_batches b
+    LEFT JOIN LATERAL (
+        SELECT date, closing_count FROM pig_daily_log
+        WHERE batch_code = b.batch_code ORDER BY date DESC LIMIT 1
+    ) lc ON true
+    WHERE b.pen = %(pen)s
+    ORDER BY b.start_date DESC
+"""
+
+
+def fetch_pen_summary(conn, pen):
+    """Every batch ever recorded in `pen` (pens get reused over a farm's
+    life, unlike batch codes), most recent first - piggery-only, since
+    poultry_batches tracks a house, not a pen, in this schema."""
+    return _rows(conn, PEN_SUMMARY_SQL, {"pen": pen})
+
+
+PIG_BATCH_SUMMARY_SQL = """
+    SELECT b.batch_code, 'piggery' AS domain, b.pen AS location, b.breed,
+           b.status, b.start_date, b.target_market_date AS target_date,
+           lc.date AS latest_date, lc.closing_count AS headcount,
+           lw.avg_weight_kg AS avg_weight, 'kg' AS weight_unit
+    FROM pig_batches b
+    LEFT JOIN LATERAL (
+        SELECT date, closing_count FROM pig_daily_log
+        WHERE batch_code = b.batch_code ORDER BY date DESC LIMIT 1
+    ) lc ON true
+    LEFT JOIN LATERAL (
+        SELECT avg_weight_kg FROM pig_weights
+        WHERE batch_code = b.batch_code ORDER BY date DESC LIMIT 1
+    ) lw ON true
+    WHERE b.batch_code = %(batch_code)s
+"""
+
+POULTRY_BATCH_SUMMARY_SQL = """
+    SELECT b.batch_code, 'poultry' AS domain, b.house AS location, b.breed,
+           b.status, b.placement_date AS start_date,
+           b.target_off_date AS target_date,
+           lc.date AS latest_date, lc.closing_birds AS headcount,
+           lw.avg_weight_g AS avg_weight, 'g' AS weight_unit
+    FROM poultry_batches b
+    LEFT JOIN LATERAL (
+        SELECT date, closing_birds FROM poultry_daily_log
+        WHERE batch_code = b.batch_code ORDER BY date DESC LIMIT 1
+    ) lc ON true
+    LEFT JOIN LATERAL (
+        SELECT avg_weight_g FROM poultry_weights
+        WHERE batch_code = b.batch_code ORDER BY date DESC LIMIT 1
+    ) lw ON true
+    WHERE b.batch_code = %(batch_code)s
+"""
+
+
+def fetch_batch_summary(conn, batch_code):
+    """Checks pig_batches first, then poultry_batches - a batch code
+    belongs to exactly one domain in this schema, never both. Both queries
+    return the same normalized column set (location/headcount/avg_weight/
+    weight_unit) so the caller never needs to know which domain matched."""
+    rows = _rows(conn, PIG_BATCH_SUMMARY_SQL, {"batch_code": batch_code})
+    if rows:
+        return rows[0]
+    rows = _rows(conn, POULTRY_BATCH_SUMMARY_SQL, {"batch_code": batch_code})
+    return rows[0] if rows else None
+
+
+# ---------------------------------------------------------------------------
 # Domain Lookup page - pick a domain, see its key metrics without typing a
 # chat question. See .scratch/domain-summary-lookup/issues/
 # 01-domain-summary-lookup-tab.md. Mostly reuses existing fetch_* functions'
