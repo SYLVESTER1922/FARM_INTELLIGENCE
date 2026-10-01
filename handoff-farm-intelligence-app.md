@@ -30,12 +30,27 @@ shipped**, the user asked directly for an explicit accuracy target on the whole 
 deterministic narration-grounding safety net (every number in a narrated answer must
 trace back to the real tool data or the answer falls back to a plain, mechanically-
 generated sentence instead) - plus two honestly-filed, deliberately-not-yet-fixed
-tickets naming the real gaps neither of those two mechanisms closes. See section 6.
-Before all of that, the data source went fully live: a real Google Sheet now feeds
-Supabase on a lazy poll-on-request cycle (no more manual `.xlsx` re-sync), and a global
-date-range filter reaches every dashboard page and the chat's inject-and-narrate
-queries — both modeled on the sibling Savanna QSR Intelligence product's actual
-architecture (read directly from its repo, not assumed). See section 5.
+tickets naming the real gaps neither of those two mechanisms closes. **A real live chat
+transcript from the deployed app then surfaced three more bugs** (two in the just-built
+grounding check itself - a stripped minus sign on negative numbers, and `decimal.Decimal`
+never being recognized as a number at all, which silently broke every tier-1 catalog
+answer with a numeric field; one pre-existing and unrelated - `feed_cost_split`'s
+relative-period extraction hallucinating "October 2023" for "this month") - all three
+root-caused against real production data before any fix was attempted, then fixed and
+re-verified. See section 6. **This also surfaced that Render's auto-deploy has never
+fired once**, for any push, in this service's entire history - every one of its deploys
+has been manually triggered via the API; manual triggering is now the standing process
+(see `[Render manual deploy]` in this session's persistent memory, and the Repo state
+section below). Most recently, the **Chat page itself was redesigned**: a navy-and-gold
+theme and three-column layout (farm snapshot/recent searches/export; chat/voice input/
+follow-ups; about-the-farm/quick-lookup/alerts), recreated from a sibling reference
+app's real code, scoped to the Chat page only, with all state in `gr.State` rather than
+globals and every suggested follow-up verified answerable against the chatbot's own
+catalog. See section 3. Before all of that, the data source went fully live: a real
+Google Sheet now feeds Supabase on a lazy poll-on-request cycle (no more manual `.xlsx`
+re-sync), and a global date-range filter reaches every dashboard page and the chat's
+inject-and-narrate queries — both modeled on the sibling Savanna QSR Intelligence
+product's actual architecture (read directly from its repo, not assumed). See section 5.
 
 ## Repo state
 
@@ -164,6 +179,22 @@ architecture (read directly from its repo, not assumed). See section 5.
     set from real `query_log` questions) and 27 (neither eval nor grounding check covers
     a tool that runs cleanly and answers the *wrong* question with a real number) - both
     open, deliberately not fixed yet. See section 6.
+  - `9bd9872` — this doc's previous update (the accuracy-target round: ticket 24's eval,
+    ticket 25's grounding check, tickets 26-27).
+  - `8808389` — ticket 28: fixed three real bugs found via a live chat transcript (two
+    in the grounding check itself - a stripped minus sign, and `decimal.Decimal` never
+    recognized as a number at all; one pre-existing, `feed_cost_split`'s relative-period
+    extraction hallucinating "October 2023" for "this month"). Also surfaced that
+    Render's auto-deploy has never fired once in this service's history - manual
+    triggering is now the standing process. See section 6 and this session's persistent
+    memory (`render_manual_deploy`).
+  - `6677357` — redesigned the Chat page: a navy-and-gold theme and three-column layout,
+    recreated from github.com/SYLVESTER1922/Devreotes--GraphRag's real code (cloned and
+    read directly), scoped to the Chat page only via `ui/theme.py`'s `#np-chat`-scoped
+    CSS - every other page keeps its existing green/white theme. All chat/search state
+    in `gr.State`, never a module-level global; follow-up suggestions drawn from and
+    verified against `chatbot/catalog.py`'s `CATALOG`. `chatbot/` itself untouched. See
+    section 3.
 - Throwaway branch `prototype/supabase-domain-join-test` (`447dbec`) — the SQLite
   prototype that first found the sync's feed_inventory grain issue. Deliberately not
   merged into `main` (prototypes are a primary source kept on their own branch here).
@@ -357,6 +388,67 @@ the `handle_message` boundary for the same reason).
 
 - Combined test suite: **71 tests, all passing**, stable across repeated full-suite runs.
   Run with `source .venv/bin/activate && python -m pytest tests/`.
+
+**Chat page redesign (navy-and-gold theme, three-column layout) — no spec/tickets,
+built directly from a reference app's real code.** The user asked to clone
+`github.com/SYLVESTER1922/Devreotes--GraphRag` into a temp folder outside this repo and
+read its `app.py`'s CSS/layout (done - see its real code for the exact source), then
+recreate that theme and layout in Farm Intelligence's Chat page specifically, not the
+whole app.
+
+- **`ui/theme.py`** (new): the navy (`#050d1a`) + gold (`#c9a84c`) CSS, Palatino-serif
+  title over Lato body, gradient header with a gold bottom border and `NI_logo.png`
+  (the user's own asset, dropped at the repo root ahead of this task) base64-embedded
+  in. Deliberately scoped under `#np-chat`, not the reference's own
+  `body`/`.gradio-container` selectors - those would have recolored the *entire* app;
+  every other page (Dashboard, Herd & Flock, Finance, ...) keeps its existing green/
+  white theme from section 4 below, untouched.
+- **Layout**: a 1:3:1 three-column row replacing the old plain `gr.ChatInterface`. Left:
+  farm snapshot (reuses `fetch_dashboard_stats`, no new query), recent searches
+  (`gr.Dropdown`, click-to-replay), Export Chat. Center: `gr.Chatbot`, a textbox + a
+  compact `gr.Audio(sources=["microphone"])` mic + Send, 3 follow-up buttons. Right:
+  About the Farm (reuses `fetch_farm_profile`), Quick Lookup (Pen/Batch/Debtor - two
+  genuinely new queries, `fetch_pen_summary`/`fetch_batch_summary` in `ui/queries.py`;
+  Debtor reuses `fetch_debtors` directly), Top Alerts (reuses `fetch_findings`).
+- **Voice input**: Whisper (`whisper-1`), the same pattern already verified in Lobels
+  Stores Intelligence and in the Devreotes-GraphRag reference - `_transcribe_audio`
+  wraps the OpenAI call, never raises (an empty string on any failure, treated exactly
+  like an empty typed message).
+- **State discipline - the user's own explicit requirement**: all chat/search state
+  (`chat_state`, `search_history_state`, `search_order_state`) lives in `gr.State`,
+  threaded explicitly through every handler (`_chat_respond`/`_replay_search`), never a
+  module-level global - unlike the reference app's own `search_history`/`history_order`/
+  `current_lang`, which are module globals and would leak one visitor's chat history
+  into another's on a real multi-user deployment.
+- **Follow-up suggestions are drawn from `chatbot/catalog.py`'s `CATALOG`, not
+  invented** - `_followup_pool()` takes each entry's first phrase (appending "this
+  month" to the one entry needing a period, `feed_cost_split`, so a single click
+  resolves cleanly via the relative-period fix from section 6's round 4 instead of
+  landing on a clarifying question). Verified directly (not assumed): every phrase in
+  the pool resolves to a real `query_id` via `chatbot/matcher.py`'s deterministic
+  `match()`, asserted in a test.
+- **`chatbot/` is completely unchanged** - `handle_message`/`_chat_fn` keep their
+  existing signatures and behavior; only `ui/app.py`, `ui/queries.py`, and the new
+  `ui/theme.py` were touched.
+- A real naming collision was caught before it shipped: `ui/app.py` already had a
+  module-level `theme = gr.themes.Soft(...)` (the Gradio color theme, used at
+  `.launch()`); importing the new `ui/theme` module under the same name would have
+  silently shadowed it. Fixed by importing it as `from ui import theme as chat_theme`.
+  A second real bug was caught the same way, via actually building the interface rather
+  than assuming it would work: Gradio 6.27.0's `gr.Chatbot` no longer accepts a `type`
+  kwarg at all (the old tuple-vs-messages toggle is gone; messages format is now the
+  only behavior) - `TypeError` on `build_interface()`, fixed by dropping the kwarg.
+- **27 new tests** (`tests/test_ui_queries.py` for the two new lookup queries;
+  `tests/test_ui_app.py` for follow-up-pool answerability, session-state threading
+  (append/replay/dedup/cap-at-10), export, Whisper error-handling, and quick lookup) -
+  219 tests passing total (up from 195), run twice for stability, zero regressions in
+  the untouched existing suite.
+- Shown to the user locally first, per their explicit request, before any deploy: the
+  app was run as a background process (`python -m ui.app`), smoke-tested via
+  `gradio_client` against real production data (`/_chat_respond`, `/_quick_lookup`), and
+  the served HTML was grepped for the new theme/layout markers - all before telling the
+  user where to look. Deployed only after the user reviewed it locally and said to ship
+  it (`6677357`, deploy `dep-dau81g2d0e5s73el1gsg`), then re-verified live the same way.
 
 ### 4. Dashboard (`ui/queries.py`, `ui/charts.py`) — built directly, no spec/tickets
 
@@ -702,7 +794,7 @@ upholding the same principle).
   already there from section 4's work), consistent with the app's existing public/no-auth
   posture.
 
-### 6. Chatbot catalog expansion: tier-0 + tier-3 — `spec-chatbot-catalog-expansion.md`, tickets 01–27
+### 6. Chatbot catalog expansion: tier-0 + tier-3 — `spec-chatbot-catalog-expansion.md`, tickets 01–28
 
 **Context this closes out**: since early in this project, a `/grill-me` session on
 expanding the chatbot beyond its fixed 4-query catalog had been parked mid-flight -
@@ -1098,8 +1190,91 @@ effects (`q_revenue_breakdown`/`q_headcount` answered correctly through the real
 deployed app, via `gradio_client` against the `/_chat_fn` endpoint - discovered via
 `client.view_api()` since the chat component's real API name isn't `/chat`).
 
+**Round 4 (ticket 28) - a real live chat transcript from the deployed app surfaced
+three more bugs**, reported with the user's explicit instruction to root-cause each one
+before touching anything. All three confirmed by direct reproduction against production
+data, not assumed:
+1. **The just-built grounding check (ticket 25) stripped the sign off negative
+   numbers** - `q_profit`'s real `-5563.5` never matched its own narration's `-5563.5`
+   (the regex read it as `5563.5`), wrongly discarding a correct answer into the raw-
+   dump fallback. Fixed: the number regex now optionally captures a leading `-`, with
+   the lookbehind still checked *before* that sign so a hyphenated identifier suffix
+   ("PL2-25A") still correctly fails to match.
+2. **The grounding check never recognized `decimal.Decimal` as a number at all** -
+   tier-1 catalog queries return raw `Decimal` columns straight from psycopg (tier-3
+   tools `float()`-cast everything, which is why this was missed when ticket 25 was
+   first verified), so `numbers_in_data` came back empty for *any* tier-1 catalog answer
+   with a numeric field, and every number the narration then mentioned was flagged
+   "ungrounded" unconditionally. Systemic, not a one-off - this silently broke
+   `feed_cost_split`/`poultry_mortality_spike`/`piggery_disease_outbreak`/`crop_debtor`
+   narration generally, not just the one reported question. Fixed: `numbers_in_data` now
+   also accepts `Decimal`.
+3. **A known date reformatted as prose was the single most frequent false positive** -
+   found via repeated real trials (~1 in 5-6), not a rare edge case. A real ISO date
+   ("2026-06-17") the LLM rewrote as "June 17, 2026" never matched the literal-substring
+   erasure, so its digits leaked through as apparently-invented numbers. Fixed with
+   `_erase_reformatted_known_dates`: detects a Month-DD-YYYY or DD-Month-YYYY span,
+   erasing it only when it matches a real known date from the data - never a blanket
+   "date-shaped numbers are fine" allowance. Verified: 15/15 real trials of the same
+   question that previously failed ~1-in-6 now pass with zero fallbacks.
+4. **Separately, unrelated to today's other three bugs and pre-existing**:
+   `feed_cost_split`'s relative-period extraction was unreliable. Tier-2's LLM-
+   extraction prompt asks the model to freely state a "period" with no anchor to real
+   data; for "this month" it produced "October 2023" - its own training-era guess at
+   "now" - which then passed straight through `extract_period`'s Month-Year regex as if
+   explicit, querying a period with no real rows and (correctly, but unhelpfully)
+   narrating "no data available." Fixed with `chatbot/matcher.py`'s new
+   `extract_relative_period`/`mentions_relative_period` - the same "the LLM never
+   computes a relative date itself" principle already applied to `q_mortality_rate`'s
+   symbolic period enum, extended to tier-1/2's free-text period parameter. The real
+   anchor date (`latest_daily_log_date`, relocated from `chatbot/tools.py`'s private
+   `_latest_headcount_date` to `chatbot/catalog.py`) is looked up only when a question
+   mentions "this month"/"last month" at all, and the lookup is wrapped defensively
+   (`except psycopg.errors.UndefinedTable`) - a real regression (47 test failures) from
+   an earlier, unconditional version of this lookup was caught and fixed within this
+   same ticket, before it ever reached a commit.
+
+**Two items from the original report investigated and confirmed NOT bugs**: headcount
+= 12 is correct (3 of 4 pig batches are already `status='Sold'` and correctly excluded
+from "active as of today" - only `PIG-B04` is still active); the hen-day lay-rate
+refusal is honest, not a gap (this farm's poultry batches are all `bird_type='Broiler'`,
+and `eggs_collected/cracked/dirty` sum to zero across every row - no layers, no real
+egg data here, and no lay-rate tool was ever built, contrary to the original report's
+claim that it was "one of the 19 tools that passed 50/50 in ticket 24").
+
+**Explicitly not fixed, correctly left to ticket 27**: the profit question ("which
+enterprise made the most profit") still only compares within one domain
+(`q_profit` called with `domain="piggery"` instead of a real cross-domain comparison) -
+that is a right-tool-wrong-argument question, not a grounding or period bug.
+
+**195 tests passing** (up from 176), run twice for stability. Deployed
+(`8808389`, deploy `dep-dau6re893c1s73cvdep0`) and re-verified live: the 6 originally-
+reported questions plus a broader 16-question sweep, zero fallback-format answers
+across all of them.
+
+**A real, general finding from chasing this deploy down, worth knowing going
+forward**: pulling this service's *entire* deploy history (not just the latest one)
+showed every single deploy - 20 out of 20, back to when the service was first created -
+has `trigger: "api"`, never `"commit"`. Render's own service config is correct
+(`autoDeploy: "yes"`, `autoDeployTrigger: "commit"`); the likely root cause is on
+GitHub's side (the Render GitHub App may never have been fully installed/authorized on
+`SYLVESTER1922/FARM_INTELLIGENCE` - the repo's GitHub identity differs from the Render
+workspace's account), but this couldn't be confirmed further without `gh` CLI or a
+GitHub API token, neither available in this environment. The user explicitly decided to
+keep manual triggering as the standing process rather than chase the GitHub side right
+now - saved as a persistent memory (`render_manual_deploy`) so this doesn't need
+rediscovering in a future session.
+
 ## Open items — unresolved, don't assume either way
 
+- **Render auto-deploy has never fired once, for any push, in this service's entire
+  history** (all 20 deploys checked were `trigger: "api"`, none `"commit"`) - Render's
+  own config is correct; the likely root cause is GitHub-side (the Render GitHub App
+  possibly never fully installed/authorized on `SYLVESTER1922/FARM_INTELLIGENCE`), not
+  confirmed further since no `gh` CLI or GitHub API token is available in this
+  environment. The user explicitly decided to keep manual triggering as the standing
+  process rather than chase this now - see this session's persistent memory
+  (`render_manual_deploy`) and section 6's round 4. Revisit only if asked.
 - ~~A `/grill-me` session on expanding the chatbot's catalog into NL-to-SQL was
   mid-flight~~ — **resolved.** The user set a hard constraint (no free-form
   LLM-generated/executed SQL, ruled out entirely) that made the original round-2
