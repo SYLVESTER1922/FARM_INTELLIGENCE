@@ -9,8 +9,11 @@ Cases that are refusals or clarifications have no spec (None). DRAFT, like the c
 reviewed with them.
 """
 
+import datetime as _dt
 from evals.cases_dev import APR, AUG, JAN, JUN, MAR, MAY, OCT, Q2, SEP, YEAR_2026, YTD
 from registry import Scope
+
+D = _dt.date
 
 P, C_, CR = ("piggery",), ("poultry",), ("crops",)
 
@@ -85,6 +88,16 @@ SPECS = {
     "he01": S("health_events", domains=P), "he02": S("health_events"), "he03": S("health_events"),
     "he04": S("health_events"), "he05": S("health_events", domains=C_), "he06": S("health_events", domains=P),
     "wx01": S("weather"), "wx02": S("weather", **_rng(JAN)),
+    # relative phrases (each case carries its own clock; see Case.today / Case.week_start)
+    "lw01": S("feed_consumed_cost", start=D(2026, 9, 7), end=D(2026, 9, 13)),
+    "lw02": S("feed_consumed_cost", start=D(2026, 9, 6), end=D(2026, 9, 12)),
+    "lw03": S("feed_consumed_cost", start=D(2026, 9, 9), end=D(2026, 9, 15)),
+    "lw04": S("feed_consumed_cost", start=D(2026, 10, 5), end=D(2026, 10, 11)),
+    "sd01": S("feed_consumed_cost", start=D(2026, 8, 15), end=D(2026, 8, 15)),
+    "sd02": S("feed_consumed_cost", start=D(2026, 2, 28), end=D(2026, 2, 28)),
+    "sd03": S("feed_consumed_cost", start=D(2026, 4, 30), end=D(2026, 4, 30)),
+    "sd04": S("feed_consumed_cost", start=D(2025, 10, 15), end=D(2025, 10, 15)),
+    "sd05": S("active_headcount", domains=P, as_of=D(2026, 8, 15)),
     # dashboard-filter rules: the scope the resolver should produce
     "sc01": S("feed_consumed_cost", **_rng(AUG)), "sc02": S("feed_consumed_cost", **_rng(MAR)),
     "sc03": S("feed_consumed_cost"), "sc04": S("active_headcount", domains=P),
@@ -94,4 +107,13 @@ SPECS = {
     "nz03": S("active_headcount", domains=C_), "nz04": S("expenses"), "nz05": S("expenses", category="Fertiliser"),
     "nz06": S("active_headcount", domains=P), "nz07": S("receivables"),
     "nz08": S("feed_consumed_cost", domains=P, **_rng(AUG)),
+}
+
+
+# Questions the resolver must REFUSE by name rather than answer one side of: a comparison of two periods.
+# case id -> (registry metric the router would pick, resolver code that must come back)
+REFUSAL_SPECS = {
+    "cmp01": ("feed_consumed_cost", "comparison_not_supported"),
+    "cmp02": ("feed_consumed_cost", "comparison_not_supported"),
+    "cmp03": ("active_headcount", "comparison_not_supported"),
 }

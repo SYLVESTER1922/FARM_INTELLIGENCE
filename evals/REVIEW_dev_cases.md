@@ -15,7 +15,9 @@ Eval clock: today = 2026-10-15 (Africa/Harare); latest data in the fixture = 202
 | hc05 | draft | headcount | Y | v1 | answer | How many birds are on the farm? | figures 509 |  | as of 2026-09-15 |
 | hc06 | draft | headcount | Y | v1 | answer | Number of pigs on the farm today | figures 12 |  | as of 2026-09-15 |
 | hc07 | draft | headcount | Y | v1 | answer | How many pigs and chickens combined do we have? | any of 521 |  | as of 2026-09-15; total 521 |
-| hc08 | draft | headcount | Y | v2_only | refuse | How many sows do we have? | must NOT show 12 |  | Is a sow count a launch metric? If yes this becomes an answer case (sow_register has 3 sows).; sow register exists but no sow metric in the launch registry; a pig headcount is the wrong figure |
+| hc08 | draft | headcount | Y | v2_only | answer | How many sows do we have? | figures 3 |  | sow_count metric: sows on the farm (not culled) with the status split. The old engine answers with the pig headcount.; sows on the farm, not culled; the status split is shown too |
+| hc09 | draft | headcount | Y | v2_only | answer | How many sows are pregnant? | figures 1 |  |  |
+| hc10 | draft | headcount | Y | v2_only | answer | How many sows are lactating? | figures 1 |  |  |
 | bc01 | live | headcount | Y | v1 | answer | How many batches of poultry do we have? | figures 4, 1 |  | Decision 6: 'N batches in total, M active' (4 total, 1 active).; 'N batches in total, M active' |
 | bc02 | draft | headcount | Y | v1 | answer | How many pig batches do we have? | figures 4, 1 |  | 'N batches in total, M active' |
 | bc03 | draft | headcount | Y | v1 | answer | How many batches are currently active? | figures 8, 2 |  | 'N batches in total, M active' |
@@ -57,7 +59,7 @@ Eval clock: today = 2026-10-15 (Africa/Harare); latest data in the fixture = 202
 | ex02 | draft | money | Y | v1 | answer | How much have we spent on the piggery? | figures 14,896.67 |  |  |
 | ex03 | draft | money | Y | v1 | answer | How much have we spent on poultry? | figures 7,201.15 |  |  |
 | ex04 | draft | money | Y | v1 | answer | How much have we spent on crops? | figures 6,753.5 |  |  |
-| ex05 | draft | money | Y | v1 | answer | Compare piggery and poultry costs | figures 6,753.5, 14,896.67, 7,201.15, 1,528.74; mentions Shared (not allocated) |  | Decision 5: 'Shared (not allocated)' is shown so the rows sum to the total.; decision 5: the unallocated costs show as 'Shared (not allocated)' so the rows sum to the total |
+| ex05 | draft | money | Y | v1 | answer | Compare piggery and poultry costs | figures 14,896.67, 7,201.15 |  | Names two domains, so only those two are shown. The all-domain view (ex14) shows 'Shared (not allocated)' so the rows sum to the total.; only the named domains: piggery, poultry |
 | ex06 | draft | money | Y | v1 | answer | What's our biggest expense category? | figures 19,281; mentions Feed |  |  |
 | ex07 | draft | money | Y | v1 | answer | How much did we spend on electricity? | figures 786.56 |  |  |
 | ex08 | draft | money | Y | v1 | answer | Show the expense breakdown by category | figures 19,281, 3,475.5, 1,980, 1,354.82, 1,298, 1,157.6, 786.56, 742.18, 304.4 |  |  |
@@ -155,8 +157,20 @@ Eval clock: today = 2026-10-15 (Africa/Harare); latest data in the fixture = 202
 | cl05 | draft | clarify |  | v2_only | clarify | And for poultry? | - |  | follow-up with no previous question |
 | cl06 | draft | clarify |  | v2_only | clarify | How are the pigs doing? | - |  | ambiguous: headcount, weight, deaths or health |
 | cl07 | draft | clarify |  | v2_only | clarify | Tell me about the farm | - |  | too broad |
+| lw01 | draft | money | Y | v2_only | answer | What was the feed cost last week? | figures 391.35 |  | 'Last week' = the previous full Monday to Sunday week: Thursday 17 Sep 2026, so 7-13 Sep. The first line echoes the dates. |
+| lw02 | draft | money | Y | v2_only | answer | What was the feed cost last week? | figures 389.26 |  | Same question on a farm whose week starts on Sunday: the previous full week is 6-12 Sep. |
+| lw03 | draft | money | Y | v2_only | answer | What was the feed cost in the last 7 days? | figures 391.58 |  | 'Last 7 days' is a rolling window ending today (inclusive), not the previous week. |
+| lw04 | draft | money | Y | v2_only | answer | What was the feed cost last week? | mentions 2026-09-15; one of 'recorded', 'no ' |  | With the clock at 15 Oct the data (to 15 Sep) does not reach last week: 'No ... recorded', not 0.; no feed data in this period: must say so and name the latest record date |
+| sd01 | draft | money | Y | v2_only | answer | What was the feed cost on the same day last month? | figures 64.09 |  | Same day last month = one date: 15 Aug 2026. The resolved date is echoed on the first line. |
+| sd02 | draft | money | Y | v2_only | answer | What was the feed cost on the same day last month? | figures 31.49 |  | Clamping: 31 Mar minus a month has no 31 Feb, so it is the last day of February, 28 Feb 2026. |
+| sd03 | draft | money | Y | v2_only | answer | What was the feed cost on the same day last month? | figures 13.79 |  | Clamping: 31 May minus a month is 30 Apr (April has 30 days). |
+| sd04 | draft | money | Y | v2_only | answer | What was the feed cost on the same day last year? | figures 14.9 |  | Same day last year from 15 Oct 2026 is 15 Oct 2025, inside the data (poultry feed only; pigs start in November). |
+| sd05 | draft | headcount | Y | v2_only | answer | How many pigs did we have the same day last month? | figures 38 |  | A snapshot question with a named past date is answered as of that date.; as of 2026-08-15 |
+| cmp01 | draft | refusal |  | v2_only | refuse | How does this month's feed cost compare to last month? | - |  | period comparison: a named refusal in v1 |
+| cmp02 | draft | refusal |  | v2_only | refuse | What was the feed cost vs last month? | - |  | period comparison: a named refusal in v1 |
+| cmp03 | draft | refusal |  | v2_only | refuse | How many pigs do we have compared to the same day last month? | - |  | period comparison: a named refusal in v1 |
 | sc01 | draft | scope | Y | v2_only | answer | What's our total feed cost? | figures 1,692.88 | 2026-08-01..2026-08-31 | Rule 3: no period named, filter set to Aug 2026 -> the filter applies. |
-| sc02 | draft | scope | Y | v2_only | answer | What was our feed cost in March 2026? | figures 1,717.53 | 2026-08-01..2026-08-31 | Rule 1: a named period wins over the filter. |
+| sc02 | draft | scope | Y | v2_only | answer | What was our feed cost in March 2026? | figures 1,717.54 | 2026-08-01..2026-08-31 | Rule 1: a named period wins over the filter. |
 | sc03 | draft | scope | Y | v2_only | answer | What's our feed cost all time? | figures 14,781.92 | 2026-08-01..2026-08-31 | Rule 2: explicit scope words override the filter. |
 | sc04 | draft | scope | Y | v2_only | answer | How many pigs do we have? | figures 12 | 2026-03-01..2026-03-31 | Rule 5: snapshot questions ignore the filter.; as of 2026-09-15 |
 | sc05 | draft | scope | Y | v2_only | answer | What's our total feed cost overall? | figures 14,781.92 | 2026-08-01..2026-08-31 | Rule 2: 'overall'. |

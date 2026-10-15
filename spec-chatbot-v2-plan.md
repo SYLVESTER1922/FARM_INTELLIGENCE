@@ -311,3 +311,34 @@ Each step names what it lets us measure.
 Also at this step: the metric registry (`registry/`, 21 metrics: the 19 planned plus `crop_plantings`, kept so the
 existing area-planted and crop-types answers don't disappear, and `sow_count`), dashboard parity tests, the one-time
 `query_log` startup migration (`registry/migrations.py`), and `registry/CHANGELOG-dashboard.md` (the Feeding page before/after note).
+
+## 17. Resolver details agreed at step 3 (2026-10-15)
+
+Relative phrases, all resolved in code against the calendar date in Africa/Harare:
+
+| Phrase | Resolves to |
+|---|---|
+| last week | the previous full week, from the farm's first weekday (default Monday, so Monday to Sunday); the week start is a per-farm setting (`farm_settings.week_start`) |
+| this week | the current week from that weekday |
+| last 7 days (or any N days, weeks, months) | a rolling window ending today, today included (7 days = today and the 6 before) |
+| last month, this month, last quarter, this quarter, last year, this year | the whole calendar period (coverage then says if the data reaches it) |
+| year to date | 1 January to today |
+| same day last month / same day last year | one date: today minus one month or one year, clamped to the last day of a shorter month (31 Mar gives 28 Feb, or 29 in a leap year; 31 May gives 30 Apr); 29 Feb minus a year gives 28 Feb. The resolved date is echoed on the first line, e.g. "same day last month (28 Feb 2026)". |
+
+A snapshot question that names a past date (such as "same day last month") is answered as of that date.
+
+**Comparisons of periods are a named refusal in v1.** "This month vs last month", "same day last month compared to today",
+"higher than last year": the bot says it can't compare two periods yet and suggests asking for each separately. Comparing
+domains ("compare piggery and poultry costs", "pigs vs chickens in March") is not affected. Before this was added, the
+comparison words were silently dropped and one of the two periods was answered as if it were the question; and
+"same day last month" silently meant the whole of last month.
+
+## 18. Post-launch list
+
+1. **Two-scope comparison:** answer "vs last month" and "same day last month compared to today" by resolving two scopes and
+   computing the difference in code (never by an LLM), with both periods echoed.
+2. **Multi-part questions:** answering several parts in one turn (v1 asks which part first).
+3. **Exploratory lane** (semantic-layer composition, then NL-to-SQL), after per-farm isolation and a read-only role with
+   row-level security exist (section 13).
+4. **"To date" and "so far" as all-time words** if real usage shows farmers mean them that way (v1 keeps the four agreed
+   scope words plus "all-time" and "lifetime").

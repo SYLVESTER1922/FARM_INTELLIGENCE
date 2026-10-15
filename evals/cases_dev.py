@@ -32,6 +32,10 @@ THIS_QUARTER = (dt.date(2026, 10, 1), dt.date(2026, 12, 31))
 YTD = (dt.date(2026, 1, 1), EVAL_TODAY)
 YEAR_2026 = (dt.date(2026, 1, 1), dt.date(2026, 12, 31))
 
+SEP_17 = dt.date(2026, 9, 17)      # a Thursday inside the data's last month: "last week" is Mon 7 to Sun 13 Sep
+SEP_15 = dt.date(2026, 9, 15)
+D_ = dt.date
+
 LIVE_WRONG_FIGURE = 13308.5     # the all-time piggery feed *purchases* total the live app returned
 
 C = Case
@@ -251,6 +255,40 @@ CASES = [
     C("cl05", "And for poultry?", "clarify", ("clarify", dict(note="follow-up with no previous question")), "clarify", "v2_only"),
     C("cl06", "How are the pigs doing?", "clarify", ("clarify", dict(note="ambiguous: headcount, weight, deaths or health")), "clarify", "v2_only"),
     C("cl07", "Tell me about the farm", "clarify", ("clarify", dict(note="too broad")), "clarify", "v2_only"),
+
+
+    # ------------------------------------- relative phrases: last week, last 7 days, same day last month/year (step 3)
+    C("lw01", "What was the feed cost last week?", "answer", ("feed_cost", dict(start=D_(2026, 9, 7), end=D_(2026, 9, 13))),
+      "money", "v2_only", today=SEP_17,
+      review="'Last week' = the previous full Monday to Sunday week: Thursday 17 Sep 2026, so 7-13 Sep. The first line echoes the dates."),
+    C("lw02", "What was the feed cost last week?", "answer", ("feed_cost", dict(start=D_(2026, 9, 6), end=D_(2026, 9, 12))),
+      "money", "v2_only", today=SEP_17, week_start="sunday",
+      review="Same question on a farm whose week starts on Sunday: the previous full week is 6-12 Sep."),
+    C("lw03", "What was the feed cost in the last 7 days?", "answer", ("feed_cost", dict(start=D_(2026, 9, 9), end=D_(2026, 9, 15))),
+      "money", "v2_only", today=SEP_15, review="'Last 7 days' is a rolling window ending today (inclusive), not the previous week."),
+    C("lw04", "What was the feed cost last week?", "answer", ("feed_cost_no_data", dict(start=D_(2026, 10, 5), end=D_(2026, 10, 11))),
+      "money", "v2_only", review="With the clock at 15 Oct the data (to 15 Sep) does not reach last week: 'No ... recorded', not 0."),
+    C("sd01", "What was the feed cost on the same day last month?", "answer",
+      ("feed_cost", dict(start=D_(2026, 8, 15), end=D_(2026, 8, 15))), "money", "v2_only", today=SEP_15,
+      review="Same day last month = one date: 15 Aug 2026. The resolved date is echoed on the first line."),
+    C("sd02", "What was the feed cost on the same day last month?", "answer",
+      ("feed_cost", dict(start=D_(2026, 2, 28), end=D_(2026, 2, 28))), "money", "v2_only", today=D_(2026, 3, 31),
+      review="Clamping: 31 Mar minus a month has no 31 Feb, so it is the last day of February, 28 Feb 2026."),
+    C("sd03", "What was the feed cost on the same day last month?", "answer",
+      ("feed_cost", dict(start=D_(2026, 4, 30), end=D_(2026, 4, 30))), "money", "v2_only", today=D_(2026, 5, 31),
+      review="Clamping: 31 May minus a month is 30 Apr (April has 30 days)."),
+    C("sd04", "What was the feed cost on the same day last year?", "answer",
+      ("feed_cost", dict(start=D_(2025, 10, 15), end=D_(2025, 10, 15))), "money", "v2_only",
+      review="Same day last year from 15 Oct 2026 is 15 Oct 2025, inside the data (poultry feed only; pigs start in November)."),
+    C("sd05", "How many pigs did we have the same day last month?", "answer",
+      ("headcount", dict(domain="piggery", as_of=D_(2026, 8, 15))), "headcount", "v2_only", today=SEP_15,
+      review="A snapshot question with a named past date is answered as of that date."),
+    C("cmp01", "How does this month's feed cost compare to last month?", "refuse",
+      ("refuse", dict(note="period comparison: a named refusal in v1")), "refusal", "v2_only"),
+    C("cmp02", "What was the feed cost vs last month?", "refuse",
+      ("refuse", dict(note="period comparison: a named refusal in v1")), "refusal", "v2_only"),
+    C("cmp03", "How many pigs do we have compared to the same day last month?", "refuse",
+      ("refuse", dict(note="period comparison: a named refusal in v1")), "refusal", "v2_only"),
 
     # -------------------------------------------------- dashboard-filter rules
     C("sc01", "What's our total feed cost?", "answer", ("feed_cost", dict(start=AUG[0], end=AUG[1])), "scope", "v2_only",

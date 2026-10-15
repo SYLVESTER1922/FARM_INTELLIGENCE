@@ -72,7 +72,20 @@ class Oracle:
         return (start or dt.date(1900, 1, 1)), (end or dt.date(2999, 1, 1))
 
     # --- headcount / batches ------------------------------------------------
-    def headcount(self, domain=None):
+    def headcount(self, domain=None, as_of=None):
+        last = as_of or self.last_data_date
+        if as_of:                       # a past date: batches logging on both sides of it, at their latest count on or before it
+            totals = {}
+            for d, (log, cnt) in {"piggery": ("pig_daily_log", "closing_count"),
+                                  "poultry": ("poultry_daily_log", "closing_birds")}.items():
+                n = 0
+                for code, first, final in self.rows(f"SELECT batch_code, MIN(date), MAX(date) FROM {log} GROUP BY batch_code"):
+                    if first <= as_of <= final:
+                        n += self.one(f"SELECT {cnt} FROM {log} WHERE batch_code=%s AND date <= %s ORDER BY date DESC LIMIT 1", (code, as_of))
+                totals[d] = n
+            if domain:
+                return Expect(required=[totals[domain]], note=f"as of {as_of}")
+            return Expect(required=list(totals.values()), note=f"as of {as_of}")
         last = self.last_data_date
         pig = self.one("SELECT COALESCE(SUM(closing_count),0) FROM pig_daily_log WHERE date=%s", (last,))
         poultry = self.one("SELECT COALESCE(SUM(closing_birds),0) FROM poultry_daily_log WHERE date=%s", (last,))

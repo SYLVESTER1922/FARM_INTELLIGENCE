@@ -25,6 +25,7 @@ DOMAIN_LABELS = {
 }
 LIVESTOCK = ("piggery", "poultry")
 ALL_DOMAINS = ("piggery", "poultry", "crops")
+WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
 
 # Batch statuses (99_LISTS: STATUS_BATCH, POULTRY_STATUS) that mean the batch is
 # no longer on the farm. Only batches NOT in this set count as "active".

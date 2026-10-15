@@ -24,6 +24,8 @@ class Case:
     zt: bool = None                # zero-tolerance (money / headcount); default from group
     denial_topics: tuple = ()      # answerable cases: words that name the asked-about data;
                                    # a refusal that explicitly denies tracking one is a false claim
+    today: object = None           # the eval clock for this case (a date); default is EVAL_TODAY, 2026-10-15
+    week_start: str = None         # the farm's first weekday for this case (default monday)
     split: str = "dev"
     review: str = ""               # what the reviewer should check about this case
 

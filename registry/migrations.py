@@ -37,6 +37,16 @@ MIGRATIONS = [
         "ALTER TABLE query_log ADD COLUMN IF NOT EXISTS scope JSONB",
         "ALTER TABLE query_log ADD COLUMN IF NOT EXISTS clarification_reason TEXT",
     ]),
+    ("003_farm_settings", [
+        # Per-farm settings (registry/settings.py): the first day of the week, the feed reconciliation tolerance.
+        """CREATE TABLE IF NOT EXISTS farm_settings (
+               farm_code TEXT NOT NULL,
+               key TEXT NOT NULL,
+               value TEXT NOT NULL,
+               updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+               PRIMARY KEY (farm_code, key)
+           )""",
+    ]),
 ]
 
 
