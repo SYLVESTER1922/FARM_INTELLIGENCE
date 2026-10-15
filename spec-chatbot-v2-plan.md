@@ -32,7 +32,7 @@ The 50/50 tool-selection eval calls `resolve_tool_call` only. It bypasses six of
 
 | # | Decision |
 |---|---|
-| D1 | **Feed.** The daily log (`feed_kg` priced from `feed_inventory`) is the single "feed consumed cost" metric. `expenses.category = 'Feed'` is a separate metric, "feed purchases". Feeding page and Finance page both use the registry definition. Sync flags any month where daily-log consumption and `feed_inventory.used_kg` differ by more than **5%** (default tolerance, calibrate on real data). |
+| D1 | **Feed.** The daily log (`feed_kg` priced from `feed_inventory`) is the single "feed consumed cost" metric. `expenses.category = 'Feed'` is a separate metric, "feed purchases". Feeding page and Finance page both use the registry definition. The sync reports any month where daily-log consumption and `feed_inventory.used_kg` differ by more than the farm's tolerance (default 5%); **report-only at launch** (see section 9 and 16). |
 | D2 | **Relative periods** ("last month", "this month", "last week", "this quarter", YTD) resolve against the **calendar date in Africa/Harare**, then check coverage. Fully covered: answer normally. Partly covered: answer and state the coverage. Not covered: say so, give the latest data date, never substitute another period. The data-date anchor in `matcher.py` is dropped for relative periods. The resolved period is stated on the first line of every answer. |
 | D3 | **Snapshot questions** (headcount, stock on hand, balances) use the latest data date and say "as of <date>". |
 | D4 | **Dashboard date filter stays in chat.** Precedence below (section 5). The scope resolver applies it, not the LLM. |
@@ -52,7 +52,7 @@ The 50/50 tool-selection eval calls `resolve_tool_call` only. It bypasses six of
 | Group | Metrics |
 |---|---|
 | **Money (zero-tolerance)** | feed consumed cost; feed purchases; expenses (dimension: total, by category, by domain); revenue (dimension: total, top buyers, top products); profit; cost per animal; receivables (**new**, all domains, who owes us); labour cost |
-| **Headcount (zero-tolerance)** | active headcount; batch count (**new**); deaths and mortality rate (one definition) |
+| **Headcount (zero-tolerance)** | active headcount; batch count (**new**); sow count with status split (**new**, step 2); deaths and mortality rate (one definition) |
 | **Performance** | FCR ranking; weight; harvest yield; breeding summary |
 | **Operations** | feed stock; market readiness; health events (treatment events in a period); weather |
 
@@ -168,7 +168,8 @@ Generated from the registry, with the schema used as a coverage check. A small h
 | Severity | Gate |
 |---|---|
 | **Block** | invalid or missing currency (not a recognised ISO code); suspected mixed currency; unrecognised units; duplicate primary keys |
-| **Warn** | feed consumption mismatch above 5%; a month with no rows; 10× jump or drop in an expense category between consecutive periods |
+| **Warn** | a month with no rows; 10× jump or drop in an expense category between consecutive periods |
+| **Report only** | feed consumption reconciliation (daily log vs `feed_inventory.used_kg`) above the farm's tolerance: listed in the data-quality report, with **no banner and no caveat on any answer**; becomes a warn only after calibration on the first month of real data |
 
 A warning goes live with a visible caveat on the affected metrics and appears in a data-quality report. The 10× jump starts as warn; promote to block after one month of real data.
 
@@ -277,6 +278,36 @@ Each step names what it lets us measure.
 
 **Risks to watch:**
 
-9. The 5% reconciliation tolerance is a guess until real data exists.
+9. The reconciliation tolerance (default 5%) is a guess until real data exists; it is report-only and per-farm until calibrated (section 16).
 10. Voice input adds transcription noise; the eval includes it.
 11. Tenancy is only partly designed: it matters for the exploratory lane (item 5) and for any multi-farm deployment.
+
+## 16. Registry definitions agreed at step 2 (2026-10-15)
+
+1. **Mortality** = deaths ÷ animals at risk. For a batch, at risk = animals placed. For a period, at risk = headcount at
+   the start of the period + animals added during it. The denominator is stated in every answer.
+2. **Average weekly feed cost** = total consumed cost ÷ days covered × 7; the days used are stated. Feed *purchases*
+   for the pigs (eval case fp03) is 13,308.50.
+3. **Feed cost per animal** (renamed from "cost per animal") = feed consumed cost ÷ average headcount (mean daily
+   headcount over the days logged). **FCR** = feed kg ÷ weight gained kg per batch, between its first and latest weight
+   sample (a pig batch's starting weight counts as the first sample); a batch without two samples gets a named refusal.
+4. **A period outside a table's records** answers "No <metric> recorded for that period; latest record is <date>"
+   (or "earliest record is" before the first record), never 0. Zero is only returned inside coverage. A partly covered
+   period is answered with its coverage flagged.
+5. **By-domain expense views** show unallocated costs as "Shared (not allocated)" and the rows always sum to the total.
+   A profit for a single domain excludes those costs; farm-wide profit includes them.
+6. **Batch count** answers both: "N batches in total, M active". Active = status is not Sold and not Closed. Only
+   active batches can be ready for market or overdue.
+
+7. **Sow count** is a registry metric (`sow_count`): sows on the farm (not culled) with the split by current status
+   (Open, Served, Pregnant, Lactating). The register keeps only each sow's current status, so it always answers "now".
+   "How many sows?" is a normal answerable question (eval case hc08), not a refusal.
+8. **Feed consumption reconciliation is report-only at launch.** On the synthetic data the 5% tolerance flags 17 of 20
+   month-and-domain pairs (the inventory's `used_kg` and the daily log are independent sources and disagree), so it
+   would be noise as a warning. It is listed in the data-quality report with no banner and no caveat on answers.
+   The tolerance is a **per-farm setting** (default 5%), to be calibrated on the first month of real data before the
+   check is promoted to a warn. Section 9's severity table is updated accordingly.
+
+Also at this step: the metric registry (`registry/`, 21 metrics: the 19 planned plus `crop_plantings`, kept so the
+existing area-planted and crop-types answers don't disappear, and `sow_count`), dashboard parity tests, the one-time
+`query_log` startup migration (`registry/migrations.py`), and `registry/CHANGELOG-dashboard.md` (the Feeding page before/after note).
