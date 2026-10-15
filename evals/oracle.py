@@ -45,6 +45,11 @@ def r2(x):
     return hu(x, 2)
 
 
+def human_date(d):
+    """15 Sep 2026: the way answers show dates."""
+    return f"{d.day} {d:%b} {d.year}"
+
+
 def hu(x, nd=2):
     """Round half-up on the exact decimal (never via a binary float)."""
     d = x if isinstance(x, Decimal) else Decimal(str(x or 0))
@@ -260,12 +265,12 @@ class Oracle:
         <date>', never a figure."""
         assert not self.feed_consumed(start, end), "case expects no data in this period"
         last = max(self.one("SELECT MAX(date) FROM pig_daily_log"), self.one("SELECT MAX(date) FROM poultry_daily_log"))
-        return Expect(words=[str(last)], words_any=["recorded", "no "],
+        return Expect(words=[human_date(last)], words_any=["recorded", "no "],
                       note="no feed data in this period: must say so and name the latest record date")
 
     def no_record(self, latest, what="records"):
-        return Expect(words=[str(latest)], words_any=["recorded", "no "],
-                      note=f"no {what} for this period: must say so and name the latest record, {latest}")
+        return Expect(words=[human_date(latest)], words_any=["recorded", "no "],
+                      note=f"no {what} for this period: must say so and name the latest record, {human_date(latest)}")
 
     def feed_cost_per_animal(self, domain=None):
         """Feed consumed cost / average headcount (mean daily total headcount over the days logged)."""
@@ -446,7 +451,7 @@ class Oracle:
             if domain in (None, d):
                 live_overdue += [c for c, tg in self.rows(f"SELECT batch_code, {col} FROM {t} WHERE status<>'Sold'") if tg < last]
         sold = [c for t in ("pig_batches", "poultry_batches") for (c,) in self.rows(f"SELECT batch_code FROM {t} WHERE status='Sold'")]
-        return Expect(words_any=["no ", "none", "nothing", "not overdue", "aren't any", "are not any"] if not live_overdue else [],
+        return Expect(words_any=["no ", "none", "nothing", "not overdue", "aren't any", "are not any", "0 overdue"] if not live_overdue else [],
                       words=live_overdue, forbidden_words=sold,
                       note=f"as of {last}; sold batches are not overdue")
 

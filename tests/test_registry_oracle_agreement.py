@@ -55,7 +55,9 @@ def test_registry_agrees_with_the_oracle(farm_db, case_id):
 
     if name in NO_RECORD_ORACLES:
         assert result.status == "no_record", f"{case_id}: expected 'No ... recorded', got {result.status}"
-        assert all(w.lower() in result.message.lower() for w in exp.words), (exp.words, result.message)
+        from render import _human_dates          # the registry message carries ISO dates; answers show 15 Sep 2026
+        shown = _human_dates(result.message).lower()
+        assert all(w.lower() in shown for w in exp.words), (exp.words, shown)
         return
 
     assert result.ok, f"{case_id}: {metric} returned {result.status}: {result.message}"

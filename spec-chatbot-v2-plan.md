@@ -342,3 +342,19 @@ comparison words were silently dropped and one of the two periods was answered a
    row-level security exist (section 13).
 4. **"To date" and "so far" as all-time words** if real usage shows farmers mean them that way (v1 keeps the four agreed
    scope words plus "all-time" and "lifetime").
+
+## 19. Step 4: templated answers (2026-10-15)
+
+`render/` turns a structured registry Result plus the resolver's Resolution into the answer, with no LLM: one template per
+metric (21), the fixed layout (echoed scope on line 1; figures with the breakdown, every row, largest first, a monthly
+series chronological; the result's own notes such as the denominator; a partial-coverage note; "Data through <date>.";
+the "Say 'all time' ..." hint only when the dashboard filter changed the answer). Currency comes from
+`farm_profile.currency`; dates read "15 Sep 2026"; domains read "Piggery", "Shared (not allocated)".
+
+The completeness test fails if any field or row of a result is not read by its template (and a figure shown only through
+a note must really appear in that note). With the router given the gold spec, every answerable dev case scores correct with
+the eval scorer, so what remains of the error budget is routing (step 5).
+
+**`chatbot/grounding.py` is not deleted yet.** The old engine imports it, and the strangler plan keeps the old engine
+(and the flag-flip rollback) working until cutover. It goes when the old engine does, at the end of step 9, together with the
+regex scaffolding. The new path does not use it.

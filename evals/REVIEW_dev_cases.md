@@ -38,7 +38,7 @@ Eval clock: today = 2026-10-15 (Africa/Harare); latest data in the fixture = 202
 | fc02 | live | money | Y | v1 | answer | split the feed cost of August 2026 | figures 1,050.17, 642.7 |  |  |
 | fc03 | draft | money | Y | v1 | answer | How does feed cost split between pigs and chickens in March 2026? | figures 1,126.89, 590.65 |  |  |
 | fc04 | live | money | Y | v2_only | answer | What was our total feed cost last month? | figures 833.21; must NOT show 13,308.5 |  | Calendar 'last month' = September (partial). The live app returned the all-time piggery purchases figure. |
-| fc05 | draft | money | Y | v2_only | answer | What's our feed cost this month? | mentions 2026-09-15; one of 'recorded', 'no ' |  | October 2026 has no data: the right behaviour is to say so with the latest data date, not to substitute another period.; no feed data in this period: must say so and name the latest record date |
+| fc05 | draft | money | Y | v2_only | answer | What's our feed cost this month? | mentions 15 Sep 2026; one of 'recorded', 'no ' |  | October 2026 has no data: the right behaviour is to say so with the latest data date, not to substitute another period.; no feed data in this period: must say so and name the latest record date |
 | fc06 | draft | money | Y | v1 | answer | What did we spend feeding the chickens in April 2026? | figures 587.99 |  |  |
 | fc07 | draft | money | Y | v1 | answer | How much did it cost to feed the pigs in May 2026? | figures 853.25 |  |  |
 | fc08 | draft | money | Y | v1 | answer | What is our total feed cost for the whole period? | figures 14,781.92 |  |  |
@@ -79,7 +79,7 @@ Eval clock: today = 2026-10-15 (Africa/Harare); latest data in the fixture = 202
 | rv05 | draft | money | Y | v1 | answer | What's our best-selling product? | figures 18,865.08; mentions Tomatoes |  |  |
 | rv06 | draft | money | Y | v1 | answer | How much did we earn in August 2026? | figures 22,929.14 |  |  |
 | rv07 | draft | money | Y | v1 | answer | Revenue from broilers | figures 9,159.36 |  |  |
-| rv08 | draft | money | Y | v2_only | answer | What were our sales last month? | mentions 2026-08-18; one of 'recorded', 'no ' |  | Decision 4: after the last revenue record the answer is 'No revenue recorded for that period; latest record is 2026-08-18', not 0.; no revenue for this period: must say so and name the latest record, 2026-08-18 |
+| rv08 | draft | money | Y | v2_only | answer | What were our sales last month? | mentions 18 Aug 2026; one of 'recorded', 'no ' |  | Decision 4: after the last revenue record the answer is 'No revenue recorded for that period; latest record is 2026-08-18', not 0.; no revenue for this period: must say so and name the latest record, 18 Aug 2026 |
 | pf01 | draft | money | Y | v1 | answer | What's our profit? | figures 29,034.07 |  | Farm-wide profit = all revenue - all expenses including the 'shared' domain. |
 | pf02 | draft | money | Y | v1 | answer | Is the piggery profitable? | figures -5,563.5; one of 'loss', 'negative', '-', 'deficit', 'not profitable', 'not making' |  |  |
 | pf03 | draft | money | Y | v1 | answer | Is poultry making money? | figures 1,958.21 |  |  |
@@ -128,9 +128,9 @@ Eval clock: today = 2026-10-15 (Africa/Harare); latest data in the fixture = 202
 | fs02 | draft | ops |  | v1 | answer | How much pig feed is in stock? | figures 4,062 |  |  |
 | fs03 | draft | ops |  | v1 | answer | How much poultry feed do we have in stock? | figures 1,900.1 |  |  |
 | mr01 | draft | ops |  | v1 | answer | Which batches are ready to sell? | mentions PIG-B04, BRO-P04; must NOT list PIG-B01, PIG-B02, PIG-B03, BRO-P01, BRO-P02, BRO-P03 |  | Sold batches must not be listed as ready/overdue. 'As of' is the latest data date (2026-09-15).; as of 2026-09-15; sold batches must not be listed as ready/overdue |
-| mr02 | draft | ops |  | v1 | answer | Are any pigs overdue for market? | one of 'no ', 'none', 'nothing', 'not overdue', "aren't any", 'are not any'; must NOT list PIG-B01, PIG-B02, PIG-B03, BRO-P01, BRO-P02, BRO-P03 |  | as of 2026-09-15; sold batches are not overdue |
+| mr02 | draft | ops |  | v1 | answer | Are any pigs overdue for market? | one of 'no ', 'none', 'nothing', 'not overdue', "aren't any", 'are not any', '0 overdue'; must NOT list PIG-B01, PIG-B02, PIG-B03, BRO-P01, BRO-P02, BRO-P03 |  | as of 2026-09-15; sold batches are not overdue |
 | mr03 | draft | ops |  | v1 | answer | Which chicken batches are coming up for off-take? | mentions BRO-P04; must NOT list BRO-P01, BRO-P02, BRO-P03 |  | as of 2026-09-15; sold batches must not be listed as ready/overdue |
-| mr04 | draft | ops |  | v1 | answer | Are any batches overdue for sale? | one of 'no ', 'none', 'nothing', 'not overdue', "aren't any", 'are not any'; must NOT list PIG-B01, PIG-B02, PIG-B03, BRO-P01, BRO-P02, BRO-P03 |  | as of 2026-09-15; sold batches are not overdue |
+| mr04 | draft | ops |  | v1 | answer | Are any batches overdue for sale? | one of 'no ', 'none', 'nothing', 'not overdue', "aren't any", 'are not any', '0 overdue'; must NOT list PIG-B01, PIG-B02, PIG-B03, BRO-P01, BRO-P02, BRO-P03 |  | as of 2026-09-15; sold batches are not overdue |
 | he01 | draft | ops |  | v1 | answer | How many treatments have the pigs had? | figures 4 |  |  |
 | he02 | draft | ops |  | v1 | answer | How much have we spent on vet care? | figures 304.4 |  |  |
 | he03 | draft | ops |  | v1 | answer | How many vaccinations have we done? | figures 8 |  |  |
@@ -160,7 +160,7 @@ Eval clock: today = 2026-10-15 (Africa/Harare); latest data in the fixture = 202
 | lw01 | draft | money | Y | v2_only | answer | What was the feed cost last week? | figures 391.35 |  | 'Last week' = the previous full Monday to Sunday week: Thursday 17 Sep 2026, so 7-13 Sep. The first line echoes the dates. |
 | lw02 | draft | money | Y | v2_only | answer | What was the feed cost last week? | figures 389.26 |  | Same question on a farm whose week starts on Sunday: the previous full week is 6-12 Sep. |
 | lw03 | draft | money | Y | v2_only | answer | What was the feed cost in the last 7 days? | figures 391.58 |  | 'Last 7 days' is a rolling window ending today (inclusive), not the previous week. |
-| lw04 | draft | money | Y | v2_only | answer | What was the feed cost last week? | mentions 2026-09-15; one of 'recorded', 'no ' |  | With the clock at 15 Oct the data (to 15 Sep) does not reach last week: 'No ... recorded', not 0.; no feed data in this period: must say so and name the latest record date |
+| lw04 | draft | money | Y | v2_only | answer | What was the feed cost last week? | mentions 15 Sep 2026; one of 'recorded', 'no ' |  | With the clock at 15 Oct the data (to 15 Sep) does not reach last week: 'No ... recorded', not 0.; no feed data in this period: must say so and name the latest record date |
 | sd01 | draft | money | Y | v2_only | answer | What was the feed cost on the same day last month? | figures 64.09 |  | Same day last month = one date: 15 Aug 2026. The resolved date is echoed on the first line. |
 | sd02 | draft | money | Y | v2_only | answer | What was the feed cost on the same day last month? | figures 31.49 |  | Clamping: 31 Mar minus a month has no 31 Feb, so it is the last day of February, 28 Feb 2026. |
 | sd03 | draft | money | Y | v2_only | answer | What was the feed cost on the same day last month? | figures 13.79 |  | Clamping: 31 May minus a month is 30 Apr (April has 30 days). |
