@@ -20,43 +20,24 @@ from chatbot.catalog import (
     PIGGERY_DISEASE_OUTBREAK_SQL,
     POULTRY_MORTALITY_SPIKE_DATE_COLUMN,
     POULTRY_MORTALITY_SPIKE_SQL,
-    active_headcount_asof,
     date_filter_sql,
-    deaths_in_window,
-    farrowing_records,
-    fcr_by_batch,
-    health_by_event_type,
 )
+from registry import Scope, compute
+from registry.headcount import headcount_asof
 
-FEED_COST_BY_DOMAIN_SQL = """
-    WITH domain_usage AS (
-        SELECT date, 'piggery' AS domain, feed_type, feed_kg FROM pig_daily_log
-        UNION ALL
-        SELECT date, 'poultry' AS domain, feed_type, feed_kg FROM poultry_daily_log
-    ),
-    priced AS (
-        SELECT u.domain, u.feed_kg,
-            (SELECT fi.unit_cost_per_kg FROM feed_inventory fi
-             WHERE fi.domain = u.domain AND fi.feed_type = u.feed_type
-               AND fi.date <= u.date
-             ORDER BY fi.date DESC LIMIT 1) AS unit_cost_per_kg
-        FROM domain_usage u
-        WHERE 1=1{date_filter}
-    )
-    SELECT domain, ROUND(SUM(feed_kg), 1) AS total_kg,
-           ROUND(SUM(feed_kg * unit_cost_per_kg), 2) AS feed_cost
-    FROM priced
-    GROUP BY domain
-    ORDER BY domain
-"""
+# Every figure below that has a registry metric is computed BY the registry
+# (registry/), the one definition shared with the chatbot's v2 path - this file
+# only adapts the registry's result to the shape each chart already expects.
+# Tests: tests/test_registry_parity.py.
 
-MONTHLY_MORTALITY_SQL = """
-    SELECT date_trunc('month', date)::date AS month, SUM(deaths) AS deaths
-    FROM {table}
-    WHERE 1=1{date_filter}
-    GROUP BY 1
-    ORDER BY 1
-"""
+
+def _scope(date_from, date_to, **kw):
+    return Scope(start=date_from, end=date_to, **kw)
+
+
+def _rows_or_empty(result):
+    """A period with no record shows an empty chart, never a fabricated zero."""
+    return result.rows if result.ok else []
 
 MONTHLY_HEADCOUNT_SQL = """
     SELECT month, SUM(headcount) AS headcount FROM (
@@ -71,23 +52,6 @@ MONTHLY_HEADCOUNT_SQL = """
     ORDER BY month
 """
 
-EXPENSES_BY_MONTH_SQL = """
-    SELECT date_trunc('month', date)::date AS month, SUM(total_cost) AS total
-    FROM expenses WHERE 1=1{date_filter} GROUP BY 1 ORDER BY 1
-"""
-
-REVENUE_BY_MONTH_SQL = """
-    SELECT date_trunc('month', date)::date AS month, SUM(total_amount) AS total
-    FROM revenue WHERE 1=1{date_filter} GROUP BY 1 ORDER BY 1
-"""
-
-DEBTORS_SQL = """
-    SELECT date, domain, product, buyer, total_amount, batch_ref
-    FROM revenue
-    WHERE payment_status = 'Owing'{date_filter}
-    ORDER BY date
-"""
-
 
 def _rows(conn, sql, params=None):
     cursor = conn.execute(sql, params or {})
@@ -96,17 +60,10 @@ def _rows(conn, sql, params=None):
 
 
 def fetch_mortality_by_month(conn, date_from=None, date_to=None):
-    """{'piggery': [(month, deaths), ...], 'poultry': [...]}"""
-    params = {}
-    date_filter = date_filter_sql("date", date_from, date_to, params)
-    sql_pig = MONTHLY_MORTALITY_SQL.format(table="pig_daily_log", date_filter=date_filter)
-    sql_poultry = MONTHLY_MORTALITY_SQL.format(table="poultry_daily_log", date_filter=date_filter)
-    pig = _rows(conn, sql_pig, params)
-    poultry = _rows(conn, sql_poultry, params)
-    return {
-        "piggery": [(r["month"], r["deaths"] or 0) for r in pig],
-        "poultry": [(r["month"], r["deaths"] or 0) for r in poultry],
-    }
+    """{'piggery': [(month, deaths), ...], 'poultry': [...]} - registry metric `mortality`, monthly."""
+    rows = _rows_or_empty(compute("mortality", conn, _scope(date_from, date_to, grain="month")))
+    return {d: [(r["month_start"], r["deaths"]) for r in rows if r["domain"] == d]
+            for d in ("piggery", "poultry")}
 
 
 def fetch_headcount_by_month(conn, date_from=None, date_to=None):
@@ -124,30 +81,34 @@ def fetch_headcount_by_month(conn, date_from=None, date_to=None):
 
 
 def fetch_fcr_by_batch(conn, date_from=None, date_to=None):
-    return fcr_by_batch(conn, date_from=date_from, date_to=date_to)
+    """[{'batch_code', 'domain', 'fcr'}, ...] - registry metric `fcr`. A batch without enough weight
+    samples is left out of the chart (the chatbot says why)."""
+    result = compute("fcr", conn, _scope(date_from, date_to))
+    return [{"batch_code": r["batch_code"], "domain": r["domain"], "fcr": r["fcr"]}
+            for r in result.rows if r["fcr"] is not None]
 
 
 def fetch_expenses_vs_revenue(conn, date_from=None, date_to=None):
-    params = {}
-    date_filter = date_filter_sql("date", date_from, date_to, params)
-    expenses = _rows(conn, EXPENSES_BY_MONTH_SQL.format(date_filter=date_filter), params)
-    revenue = _rows(conn, REVENUE_BY_MONTH_SQL.format(date_filter=date_filter), params)
+    """Registry metrics `expenses` and `revenue`, monthly."""
+    expenses = _rows_or_empty(compute("expenses", conn, _scope(date_from, date_to, grain="month")))
+    revenue = _rows_or_empty(compute("revenue", conn, _scope(date_from, date_to, grain="month")))
     return {
-        "expenses": [(r["month"], r["total"] or 0) for r in expenses],
-        "revenue": [(r["month"], r["total"] or 0) for r in revenue],
+        "expenses": [(r["month_start"], r["total"]) for r in expenses],
+        "revenue": [(r["month_start"], r["total"]) for r in revenue],
     }
 
 
 def fetch_feed_cost_by_domain(conn, date_from=None, date_to=None):
-    params = {}
-    date_filter = date_filter_sql("u.date", date_from, date_to, params)
-    return _rows(conn, FEED_COST_BY_DOMAIN_SQL.format(date_filter=date_filter), params)
+    """[{'domain', 'total_kg', 'feed_cost'}, ...] - registry metric `feed_consumed_cost` (Finance page)."""
+    rows = _rows_or_empty(compute("feed_consumed_cost", conn, _scope(date_from, date_to)))
+    return sorted(({"domain": r["domain"], "total_kg": r["feed_kg"], "feed_cost": r["feed_cost"]} for r in rows),
+                  key=lambda r: r["domain"])
 
 
 def fetch_debtors(conn, date_from=None, date_to=None):
-    params = {}
-    date_filter = date_filter_sql("date", date_from, date_to, params)
-    return _rows(conn, DEBTORS_SQL.format(date_filter=date_filter), params)
+    """Sales still owing, every domain - registry metric `receivables`."""
+    rows = _rows_or_empty(compute("receivables", conn, _scope(date_from, date_to)))
+    return [{k: r[k] for k in ("date", "domain", "product", "buyer", "total_amount", "batch_ref")} for r in rows]
 
 
 def fetch_findings(conn, date_from=None, date_to=None):
@@ -249,20 +210,23 @@ EARLIEST_FARROW_SQL = """
     SELECT MIN(farrow_date) AS total FROM breeding_farrowing WHERE farrow_date IS NOT NULL
 """
 
-EXPENSE_BREAKDOWN_SQL = """
-    SELECT category, SUM(total_cost) AS total
-    FROM expenses GROUP BY category ORDER BY total DESC
-"""
-
 
 def _scalar(conn, sql, params):
     return _rows(conn, sql, params)[0]["total"]
 
 
 def _active_headcount_asof(conn, cutoff):
-    pig = active_headcount_asof(conn, cutoff, "pig_daily_log", "closing_count")
-    poultry = active_headcount_asof(conn, cutoff, "poultry_daily_log", "closing_birds")
-    return pig, poultry
+    # The registry's one definition of "animals on the farm as of a date" (registry/headcount.py).
+    return headcount_asof(conn, "piggery", cutoff), headcount_asof(conn, "poultry", cutoff)
+
+
+def _mortality_rate(conn, first_day, last_day):
+    """Registry metric `mortality` over first_day..last_day INCLUSIVE: deaths / animals at risk. 0.0 when there
+    is no record. (The card used to exclude its first day when a range was selected; both ends count now.)"""
+    result = compute("mortality", conn, Scope(start=first_day, end=last_day))
+    if not result.ok or result.figures["rate_pct"] is None:
+        return 0.0
+    return result.figures["rate_pct"]
 
 
 def _pct_change(current, prior):
@@ -272,10 +236,6 @@ def _pct_change(current, prior):
     if not prior:
         return None
     return round((float(current) - float(prior)) / float(prior) * 100, 1)
-
-
-def _sum(pair):
-    return pair[0] + pair[1]
 
 
 def fetch_dashboard_stats(conn, date_from=None, date_to=None):
@@ -325,20 +285,14 @@ def fetch_dashboard_stats(conn, date_from=None, date_to=None):
     else:
         born_caption = f"Since {earliest_farrow}"
 
-    deaths_window = (
-        deaths_in_window(conn, window_start, window_end, "pig_daily_log") +
-        deaths_in_window(conn, window_start, window_end, "poultry_daily_log")
-    )
-    deaths_prior_window = (
-        deaths_in_window(conn, prior_window_start, prior_window_end, "pig_daily_log") +
-        deaths_in_window(conn, prior_window_start, prior_window_end, "poultry_daily_log")
-    )
-    base_now = _sum(_active_headcount_asof(conn, window_end))
-    base_prior = _sum(_active_headcount_asof(conn, prior_window_end))
-    mortality_rate = round(deaths_window / base_now * 100, 2) if base_now else 0.0
-    mortality_rate_prior = (
-        round(deaths_prior_window / base_prior * 100, 2) if base_prior else 0.0
-    )
+    # Mortality = deaths / animals at risk (opening headcount + additions), registry metric `mortality`.
+    one_day = datetime.timedelta(days=1)
+    if date_from and date_to:
+        mortality_rate = _mortality_rate(conn, date_from, date_to)
+        mortality_rate_prior = _mortality_rate(conn, prior_window_start, prior_window_end)
+    else:       # the default windows are the 30 days ending at window_end / prior_window_end
+        mortality_rate = _mortality_rate(conn, window_start + one_day, window_end)
+        mortality_rate_prior = _mortality_rate(conn, prior_window_start + one_day, prior_window_end)
     mortality_label = ("Mortality Rate (selected range)" if (date_from and date_to)
                         else "Mortality Rate (30 days)")
 
@@ -355,28 +309,23 @@ def fetch_dashboard_stats(conn, date_from=None, date_to=None):
 
 
 def fetch_expense_breakdown(conn):
-    return _rows(conn, EXPENSE_BREAKDOWN_SQL)
+    """[{'category', 'total'}, ...] largest first - registry metric `expenses`, by category."""
+    rows = _rows_or_empty(compute("expenses", conn, Scope(dimension="category")))
+    return [{"category": r["key"], "total": r["total"]} for r in rows]
 
 
 # ---------------------------------------------------------------------------
 # Feeding page
 # ---------------------------------------------------------------------------
 
-FEED_COST_BY_MONTH_SQL = """
-    SELECT date_trunc('month', date)::date AS month, domain,
-           SUM(used_kg * unit_cost_per_kg) AS cost
-    FROM feed_inventory WHERE 1=1{date_filter} GROUP BY 1, 2 ORDER BY 1, 2
-"""
-
 
 def fetch_feed_cost_by_month(conn, date_from=None, date_to=None):
-    params = {}
-    date_filter = date_filter_sql("date", date_from, date_to, params)
-    rows = _rows(conn, FEED_COST_BY_MONTH_SQL.format(date_filter=date_filter), params)
-    return {
-        "piggery": [(r["month"], float(r["cost"] or 0)) for r in rows if r["domain"] == "piggery"],
-        "poultry": [(r["month"], float(r["cost"] or 0)) for r in rows if r["domain"] == "poultry"],
-    }
+    """Feeding page. Registry metric `feed_consumed_cost`, monthly - the SAME definition the Finance page and
+    the chatbot use (daily-log feed_kg priced from feed_inventory). This page used to cost
+    feed_inventory.used_kg instead; see registry/CHANGELOG-dashboard.md."""
+    rows = _rows_or_empty(compute("feed_consumed_cost", conn, _scope(date_from, date_to, grain="month")))
+    return {d: [(r["month_start"], r["feed_cost"]) for r in rows if r["domain"] == d]
+            for d in ("piggery", "poultry")}
 
 
 # ---------------------------------------------------------------------------
@@ -390,7 +339,9 @@ RECENT_HEALTH_EVENTS_SQL = """
 
 
 def fetch_health_summary(conn, date_from=None, date_to=None):
-    return health_by_event_type(conn, date_from=date_from, date_to=date_to)
+    """[{'domain', 'event_type', 'event_count', 'total_cost'}, ...] - registry metric `health_events`."""
+    rows = _rows_or_empty(compute("health_events", conn, _scope(date_from, date_to)))
+    return [{k: r[k] for k in ("domain", "event_type", "event_count", "total_cost")} for r in rows]
 
 
 def fetch_recent_health_events(conn, date_from=None, date_to=None):
@@ -404,13 +355,14 @@ def fetch_recent_health_events(conn, date_from=None, date_to=None):
 # ---------------------------------------------------------------------------
 
 def fetch_breeding_summary(conn, date_from=None, date_to=None):
-    rows = farrowing_records(conn, date_from=date_from, date_to=date_to)
-    completed = [r for r in rows if r["farrow_date"] is not None]
+    """Registry metric `breeding`."""
+    result = compute("breeding", conn, _scope(date_from, date_to))
+    figures = result.figures if result.ok else {}
     return {
-        "records": rows,
-        "total_litters": len(completed),
-        "total_born_alive": sum(r["born_alive"] or 0 for r in completed),
-        "total_weaned": sum(r["weaned_count"] or 0 for r in completed),
+        "records": result.rows if result.ok else [],
+        "total_litters": figures.get("litters", 0),
+        "total_born_alive": figures.get("born_alive", 0),
+        "total_weaned": figures.get("weaned", 0),
     }
 
 
@@ -521,45 +473,19 @@ _DOMAIN_MODULE_COLUMNS = {
     "crops": "module_crops_active",
 }
 
-CROPS_PLANTINGS_SUMMARY_SQL = """
-    SELECT
-        COALESCE(SUM(area_ha), 0) AS total_area_ha,
-        COUNT(DISTINCT plot_code) AS plot_count,
-        COUNT(*) AS planting_count,
-        COUNT(*) FILTER (WHERE status != 'Harvested') AS active_planting_count
-    FROM plantings
-    WHERE 1=1{date_filter}
-"""
-
-CROPS_HARVEST_SQL = """
-    SELECT COALESCE(SUM(quantity_kg), 0) AS total_harvested_kg
-    FROM harvest_log
-    WHERE 1=1{date_filter}
-"""
-
 
 def fetch_crops_summary(conn, date_from=None, date_to=None):
-    """Crops-domain summary: total area planted (filtered by
-    planting_date), plot/planting counts, and total harvested (filtered by
-    harvest_log.date - a real harvest date, not the planting date)."""
-    plantings_params = {}
-    plantings_filter = date_filter_sql("planting_date", date_from, date_to, plantings_params)
-    plantings = _rows(
-        conn, CROPS_PLANTINGS_SUMMARY_SQL.format(date_filter=plantings_filter), plantings_params
-    )[0]
-
-    harvest_params = {}
-    harvest_filter = date_filter_sql("date", date_from, date_to, harvest_params)
-    harvest = _rows(
-        conn, CROPS_HARVEST_SQL.format(date_filter=harvest_filter), harvest_params
-    )[0]
-
+    """Crops-domain summary: registry metrics `crop_plantings` (area, plots, plantings - by planting date)
+    and `harvest_yield` (total harvested - by harvest date, not the planting date)."""
+    plantings = compute("crop_plantings", conn, _scope(date_from, date_to))
+    harvest = compute("harvest_yield", conn, _scope(date_from, date_to))
+    p = plantings.figures if plantings.ok else {}
     return {
-        "total_area_ha": float(plantings["total_area_ha"]),
-        "plot_count": plantings["plot_count"],
-        "planting_count": plantings["planting_count"],
-        "active_planting_count": plantings["active_planting_count"],
-        "total_harvested_kg": float(harvest["total_harvested_kg"]),
+        "total_area_ha": float(p.get("total_area_ha", 0)),
+        "plot_count": p.get("plot_count", 0),
+        "planting_count": p.get("planting_count", 0),
+        "active_planting_count": p.get("active_planting_count", 0),
+        "total_harvested_kg": float(harvest.figures["total_harvested_kg"]) if harvest.ok else 0.0,
     }
 
 
@@ -581,21 +507,21 @@ def fetch_domain_summary(conn, domain, date_from=None, date_to=None):
         summary["outstanding_amount"] = float(sum(d["total_amount"] for d in debtors))
         return summary
 
-    table = "pig_daily_log" if domain == "piggery" else "poultry_daily_log"
-    count_col = "closing_count" if domain == "piggery" else "closing_birds"
     # "Current headcount" reuses the same active-as-of-a-date methodology
     # the dashboard's stat card and the chatbot's tier-3 headcount tool
     # already use - not fetch_headcount_by_month's coarser monthly grain,
     # which would understate freshness for a single-domain lookup.
     cutoff = date_to or _latest_date(conn)
-    headcount = active_headcount_asof(conn, cutoff, table, count_col)
+    headcount = headcount_asof(conn, domain, cutoff)
 
     total_deaths = sum(d for _, d in fetch_mortality_by_month(
         conn, date_from=date_from, date_to=date_to)[domain])
-    total_feed_cost = sum(c for _, c in fetch_feed_cost_by_month(
-        conn, date_from=date_from, date_to=date_to)[domain])
-    health_rows = [h for h in fetch_health_summary(conn, date_from=date_from, date_to=date_to)
-                   if h["domain"] == domain]
+    # The registry's exact total for this domain - NOT a sum of the Feeding page's rounded monthly values, which can
+    # differ from the Finance page by cents.
+    feed = compute("feed_consumed_cost", conn, _scope(date_from, date_to, domains=(domain,)))
+    total_feed_cost = feed.figures["total_cost"] if feed.ok else 0.0
+    health = compute("health_events", conn, _scope(date_from, date_to, domains=(domain,)))
+    health_figures = health.figures if health.ok else {"total_events": 0, "total_cost": 0.0}
 
     return {
         "module_active": True,
@@ -603,6 +529,6 @@ def fetch_domain_summary(conn, domain, date_from=None, date_to=None):
         "headcount": headcount,
         "total_deaths": total_deaths,
         "total_feed_cost": float(total_feed_cost),
-        "total_health_cost": float(sum(h["total_cost"] or 0 for h in health_rows)),
-        "total_health_events": sum(h["event_count"] for h in health_rows),
+        "total_health_cost": health_figures["total_cost"],
+        "total_health_events": health_figures["total_events"],
     }
