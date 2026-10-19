@@ -68,7 +68,8 @@ register(Metric(
                 "Average weekly = total ÷ days covered × 7, with the days stated."),
     sources=("pig_daily_log", "poultry_daily_log", "feed_inventory"), unit="currency", decimals=2,
     period="range", domains=LIVESTOCK, zero_tolerance=True,
-    answers="What was spent feeding the animals in a period: totals, per domain, per month, weekly average.",
+    answers=("What was spent feeding the animals in a period: totals, per domain, per month, weekly average. A plain "
+             "'feed cost' (no word like bought or purchased) means this metric."),
     does_not_answer="What was BOUGHT (that is feed purchases) or stock on hand (feed stock).",
     compute=feed_consumed_cost, aggregations=("total", "avg_per_week"), grains=("month",),
     eval_oracles=("feed_cost", "feed_cost_no_data"),
@@ -140,7 +141,8 @@ register(Metric(
     sources=("expenses",), unit="currency", decimals=2, period="range", domains=ALL_DOMAINS + ("shared",),
     zero_tolerance=True,
     answers="Total spend, spend by domain, spend by category, spend in a month, spend on one category.",
-    does_not_answer="Money owed TO suppliers (accounts payable is not tracked); feed eaten (feed consumed cost).",
+    does_not_answer=("Money owed TO suppliers (accounts payable is not tracked). Feed has its own metrics: what the animals ate "
+                     "is feed consumed cost and what was bought is feed purchases, so a feed question is not an expense-category question."),
     compute=expenses, dimensions=("domain", "category"), grains=("month",),
     eval_oracles=("expenses", "expenses_by_domain", "expenses_by_category", "biggest_expense_category"),
     dashboard=("fetch_expense_breakdown", "fetch_expenses_vs_revenue"),
@@ -155,7 +157,7 @@ def revenue(conn, scope):
         return no_record("revenue", scope, "currency", msg, cov)
     lo, hi = bounds(scope)
     doms = list(scope.domains) if scope.domains else None
-    dim = scope.dimension
+    dim = None if scope.dimension == "domain" else scope.dimension     # by domain is the default view
     key = {"buyer": "buyer", "product": "product", None: "'all'" if scope.grain == "month" else "domain"}[dim]
     month = "date_trunc('month', date)::date" if scope.grain == "month" else "NULL::date"
     limit = "LIMIT 5" if dim in ("buyer", "product") and scope.grain != "month" else ""

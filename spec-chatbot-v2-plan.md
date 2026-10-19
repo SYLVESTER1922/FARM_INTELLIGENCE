@@ -358,3 +358,72 @@ the eval scorer, so what remains of the error budget is routing (step 5).
 **`chatbot/grounding.py` is not deleted yet.** The old engine imports it, and the strangler plan keeps the old engine
 (and the flag-flip rollback) working until cutover. It goes when the old engine does, at the end of step 9, together with the
 regex scaffolding. The new path does not use it.
+
+## 20. Step 5: the single routing path (2026-10-19)
+
+Decisions, all agreed at the start of the step:
+
+1. **One LLM call, a closed spec.** The router returns a JSON object constrained to the registry's closed enums (metric, dimension,
+   aggregation, grain, domains, period phrase, refusal class). It sees the question text only, never farm data. Anything outside the
+   enums is a validation problem, not a guess.
+2. **Disagreement means ask or refuse, never a silent pick.** The scope resolver and the deterministic cues (domain lexicon, direction
+   of money, breakdown wording) read the same words independently. When they disagree with the spec the answer is a numbered
+   clarifying question with a reason code. Two things keep this from becoming noise: an all-time disagreement is only asked about when a
+   dashboard filter could change the answer, and a period phrase the model tidied (a typo fixed) is harmless because the resolver reads
+   the period from the user's own words.
+3. **A model alone never says "not tracked".** A named refusal that makes that claim needs the user's own words behind it. If it does
+   not, or the wording reads two ways (outstanding payments, "treated for illness", "weather today"), the answer is a question between the
+   nearest tracked metric and the "not tracked" explanation. A vague question about a section or the farm is asked about, not refused.
+4. **Prompt tuning on the dev set only.** The locked held-out set is not used. No dev question is copied into the prompt; the examples are
+   invented. Every prompt change is a new `PROMPT_VERSION` with an entry and the measured result in `router/PROMPT_LOG.md`.
+5. **Candidates are compared on the five-way split, cost and latency** (correct, wrong by cause, refused, clarified), against the
+   targets: wrong at most 2% on dev, clarified at most 5%, **cost at most 1 cent a question, median latency under 3 s, p95 under 6 s**.
+   Candidates: `gpt-4o-mini`, `gpt-4.1`; `claude-haiku-5-5` is skipped until an Anthropic key exists.
+6. **The model is pinned only after the comparison**, and provisionally until the locked-set run at Gate A (`router.llm.PINNED_MODEL`).
+7. **If the LLM call fails, the bot falls back to the phrase tier for exact matches only** (`EXACT_PHRASES` in `router/pipeline.py`, 13
+   phrases) and otherwise says it cannot process questions right now. It never guesses. No retries: a failed call is reported.
+8. **Session state remembers clarification choices.** The session record holds the previous metric (for "and for poultry?"), the pending
+   clarifying question with what each option means (so "1" or "reply 2" is applied to it), and any choice between two named metrics,
+   which is not asked again in that conversation. A reply settles only its own disagreement; any other check still runs.
+
+Fixes made in the step (causes, found on the first gpt-4o-mini run, 134 of 176 correct and 3 wrong):
+
+| Cause | Fix |
+|---|---|
+| Feed cost routed to `expenses` with category "feed" (3 wrong answers) | "feed" was listed as an example category in the prompt. Removed; feed has its own metrics; `expenses.does_not_answer` and `feed_consumed_cost.answers` say so. |
+| `none / out_of_scope` for answerable questions | The metric field now says to match by meaning and use `none` only when nothing could answer even in part; the registry `answers` texts name the plain ways of asking (harvested, on hand, ready to sell, today's weather, combined headcount, sold or closed). |
+| Revenue crashed on `dimension: domain` | `registry/money.py` treats it as the default view. Regression test added. |
+| Metrics with no breakdown or weekly average were given one | The catalogue states per metric: breakdowns, average per week, month by month. A dimension "domain" on a multi-section metric is its default view. |
+| A breakdown nobody asked for ("how many pigs died" given per batch) | A dimension without breakdown wording (and no batch code) is asked about. |
+
+Results on the 176 dev cases, 3 repeats (a case is wrong if any repeat is wrong). The harness uses the local `farm_intelligence_test`
+database only.
+
+| Run | Correct | Wrong | Refused | Clarified | Cost / question | Latency median / p95 |
+|---|---|---|---|---|---|---|
+| gpt-4o-mini, prompt v1 | 134 (76.1%) | 3 (1.7%) | 22 (12.5%) | 16 (9.1%) | $0.00037 | 1.55 s / 2.98 s |
+| gpt-4o-mini, prompt v2 | 161 (91.5%) | 1 (0.6%) | 8 (4.5%) | 6 (3.4%) | $0.00042 | 0.81 s / 1.03 s |
+| gpt-4o-mini, prompt v3 | 162 (92.0%) | 0 | 4 (2.3%) | 10 (5.7%) | $0.00049 | 0.82 s / 1.02 s |
+| gpt-4o-mini, prompt v4 | 165 (93.8%) | 0 | 3 (1.7%) | 8 (4.5%) | $0.00048 | 0.81 s / 1.02 s |
+| gpt-4.1, prompt v4 | 170 (96.6%) | 0 | 0 | 6 (3.4%) | $0.00640 | 0.64 s / 0.76 s |
+
+Both candidates meet every dev target; zero wrong in the 117 money and headcount cases. This is a dev figure, tuned against, and says
+nothing about the held-out rate. **Provisional pin: `gpt-4o-mini`**, the cheapest that meets the target (13 times cheaper than gpt-4.1,
+which is the fallback if the locked run shows false refusals). Known weaknesses of the smaller model: a plain "total feed cost" is
+refused in about 1 repeat in 3 (cases sc01 and sc07), and it still misses a section word in "day-old chicks" and "feed cost per pig"
+(asked, never guessed). The remaining dev clarifications are deliberate: "outstanding payments" and "treated for illness" read two ways.
+
+Measurement notes: gpt-4.1 is rate limited on this key at 450k tokens a minute, so the runner has `--pace` (it spaces call starts and is
+outside the timed section); the first two gpt-4.1 attempts were discarded because over half the calls failed on the limit. Costs use
+`router/llm.py` `PRICES`, which are config and must be checked against current price lists.
+
+## 21. Steps 6 to 11 and what each lets us measure
+
+| Step | Scope | Lets us measure |
+|---|---|---|
+| 6 Capability catalog and refusals | Generate the catalog and the "what I can answer" help from the registry; keep the small hand-written "known untracked" list; retire `explain_gap` and `DATA_DICTIONARY` once the new path replaces them. | False "we don't track that" rate; refusal rate. |
+| 7 Sync gates | Staging copy and swap-on-pass, block and warn gates, last-good snapshot with banner and staleness, email on a block, acknowledgement and firing logs, dirty-data fixtures. | Gate false-positive rate; wrong rate on the dirty fixtures. |
+| 8 Shadow mode | The new engine runs beside the old one behind a flag, logging to a separate table; disagreement report; "report wrong answer" button; `query_log` sampling. | Questions the written set missed. |
+| 9 Per-group cutover | Headcount, then money, then the rest; each only when eval and shadow results pass; manual Render deploys, verified live. `grounding.py` and the old engine stay until the end of this step. | Live wrong rate per group. |
+| 10 Gate B pilot | The client uses it: held-out run (zero wrong in at least 200 independent money and headcount questions), sync gates and the data-quality report live. | Pilot traffic evidence. |
+| 11 Gate C claim | At most X wrong in N untuned questions at 95% confidence, clusters counted once, pinned model named. The old engine is deleted after the claim and one clean pilot month. | The 0.5% statement. |

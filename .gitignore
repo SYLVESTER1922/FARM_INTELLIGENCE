@@ -5,3 +5,7 @@ __pycache__/
 .pytest_cache/
 .env.supabase
 supabase/
+Book2.xlsx
+evals/results/
+evals/client_questions/questions*.csv
+evals/client_questions/mapping-*

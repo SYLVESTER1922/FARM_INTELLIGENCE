@@ -163,7 +163,7 @@ register(Metric(
     definition="Harvested kg per hectare by planting (harvest_log.quantity_kg ÷ plantings.area_ha), plus totals and field loss.",
     sources=("harvest_log", "plantings", "plots"), unit="kg/ha", decimals=1, period="range", domains=("crops",),
     zero_tolerance=False,
-    answers="Which plot or crop yields best, total harvested kg, field loss.",
+    answers="How much was harvested (kg) in total or by crop, which plot or crop yields best per hectare, field loss.",
     does_not_answer="Yield forecasts.",
     compute=harvest_yield, eval_oracles=("best_yield_plot", "harvest_total_kg", "yield_for_crop"),
     dashboard=("fetch_crops_summary", "fetch_domain_summary"),
