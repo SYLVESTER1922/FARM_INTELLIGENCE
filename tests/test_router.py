@@ -14,7 +14,7 @@ from resolver import resolve
 from router import answer_question_v2
 from router import crosscheck
 from router.categories import match_category
-from router.llm import LLMResult, Unavailable, cost_usd
+from router.llm import RETRY_DELAYS, LLMResult, Unavailable, cost_usd, is_transient, route_with_retries
 from router.llm_fake import FakeRouter, spec as S
 from router.prompt import PROMPT_VERSION, system_prompt, user_prompt
 from router.spec import NONE, METRIC_IDS, json_schema, parse
@@ -414,8 +414,11 @@ def test_category_matching():
 
 # ----------------------------------------------------------------------------------------------- the OpenAI adapter
 class _Msg:
-    def __init__(self, content, refusal=None):
-        self.content, self.refusal = content, refusal
+    """A chat message as the adapter reads it: the form is the content, or a forced tool call's arguments in tool mode."""
+    def __init__(self, content, refusal=None, tool=False):
+        self.refusal = refusal
+        self.content = None if tool else content
+        self.tool_calls = [types.SimpleNamespace(function=types.SimpleNamespace(arguments=content))] if (tool and content) else None
 
 
 class _FakeOpenAI:
@@ -428,7 +431,7 @@ class _FakeOpenAI:
         self.kwargs = kwargs
         if self.exc:
             raise self.exc
-        return types.SimpleNamespace(choices=[types.SimpleNamespace(message=_Msg(self.content, self.refusal))],
+        return types.SimpleNamespace(choices=[types.SimpleNamespace(message=_Msg(self.content, self.refusal, tool="tools" in kwargs))],
                                      usage=types.SimpleNamespace(prompt_tokens=self.usage[0], completion_tokens=self.usage[1]))
 
 
@@ -439,8 +442,33 @@ def test_openai_adapter_success_cost_and_request_shape():
     assert r.ok and r.data["metric"] == "fcr" and (r.input_tokens, r.output_tokens) == (2000, 90)
     assert r.cost_usd == pytest.approx(2000 * 0.15 / 1e6 + 90 * 0.60 / 1e6)
     kw = fake.kwargs
-    assert kw["temperature"] == 0 and kw["response_format"]["json_schema"]["strict"] is True
+    assert kw["temperature"] == 0 and kw["response_format"]["json_schema"]["strict"] is True and "tools" not in kw
     assert kw["messages"][0] == {"role": "system", "content": "SYS"} and kw["messages"][1]["content"] == "Q: x"
+
+
+def test_openai_adapter_tool_mode_forces_a_strict_function_call():
+    from router.llm_openai import OpenAIRouter
+    fake = _FakeOpenAI(content=json.dumps(S("fcr")))
+    r = OpenAIRouter("gpt-4o-mini", client=fake, mode="tool").route("SYS", "Q: x", json_schema())
+    assert r.ok and r.data["metric"] == "fcr"
+    kw = fake.kwargs
+    assert kw["tools"][0]["function"]["strict"] is True and "response_format" not in kw
+    assert kw["tool_choice"] == {"type": "function", "function": {"name": "route"}}
+    with pytest.raises(ValueError):
+        OpenAIRouter("gpt-4o-mini", client=fake, mode="nonsense")
+
+
+def test_an_exhausted_account_is_not_a_rate_limit_and_is_not_retried():
+    from router.llm_openai import OpenAIRouter
+
+    class RateLimitError(Exception):
+        code = "insufficient_quota"
+
+    fake = _FakeOpenAI(exc=RateLimitError())
+    waits = []
+    r = OpenAIRouter("gpt-4o-mini", client=fake, sleep=waits.append).route("s", "u", json_schema())
+    assert (r.error, r.attempts, waits) == ("InsufficientQuota", 1, [])
+    assert not is_transient(r.error)
 
 
 def test_openai_adapter_reasoning_models_get_no_temperature():
@@ -457,7 +485,7 @@ def test_openai_adapter_reasoning_models_get_no_temperature():
 ])
 def test_openai_adapter_failures_are_reported_never_raised(fake, error):
     from router.llm_openai import OpenAIRouter
-    r = OpenAIRouter("gpt-4o-mini", client=fake).route("s", "u", json_schema())
+    r = OpenAIRouter("gpt-4o-mini", client=fake, retry_delays=()).route("s", "u", json_schema())
     assert not r.ok and r.error == error and r.data is None
 
 
@@ -516,15 +544,15 @@ def test_claude_adapter_failures_are_reported_never_raised(monkeypatch):
         mod = _fake_anthropic_module(exc=lambda m, n=exc_name: getattr(m, n)())
         monkeypatch.setitem(sys.modules, "anthropic", mod)
         from router.llm_anthropic import AnthropicRouter
-        r = AnthropicRouter("claude-haiku-5-5", client=mod.Anthropic()).route("s", "u", json_schema())
+        r = AnthropicRouter("claude-haiku-5-5", client=mod.Anthropic(), retry_delays=()).route("s", "u", json_schema())
         assert (r.ok, r.error) == (False, error)
     mod = _fake_anthropic_module(exc=lambda m: m.APIStatusError(529))
     monkeypatch.setitem(sys.modules, "anthropic", mod)
-    assert AnthropicRouter("claude-haiku-5-5", client=mod.Anthropic()).route("s", "u", json_schema()).error == "APIStatusError_529"
+    assert AnthropicRouter("claude-haiku-5-5", client=mod.Anthropic(), retry_delays=()).route("s", "u", json_schema()).error == "APIStatusError_529"
     for resp, error in [(_claude_response("nope"), "bad_json"), (_claude_response("", stop="refusal"), "refusal")]:
         mod = _fake_anthropic_module(resp)
         monkeypatch.setitem(sys.modules, "anthropic", mod)
-        assert AnthropicRouter("claude-haiku-5-5", client=mod.Anthropic()).route("s", "u", json_schema()).error == error
+        assert AnthropicRouter("claude-haiku-5-5", client=mod.Anthropic(), retry_delays=()).route("s", "u", json_schema()).error == error
 
 
 def test_a_missing_claude_key_means_unavailable_and_the_runner_can_skip_it(monkeypatch):
@@ -666,3 +694,90 @@ def test_every_exact_phrase_is_answered_when_the_llm_is_down(farm_db):
     for phrase, (metric, _) in EXACT_PHRASES.items():
         a = answer_question_v2(phrase.capitalize() + "?", farm_db, FakeRouter(error="timeout"), today=TODAY)
         assert (a.kind, a.metric_id) == ("answer", metric), phrase
+
+
+# ----------------------------------------------------------------------------------------------- retries and the busy reply
+
+
+def test_which_failures_are_transient():
+    for e in ("RateLimitError", "APITimeoutError", "APIConnectionError", "TimeoutError", "InternalServerError",
+              "APIStatusError_529", "APIStatusError_503", "APIStatusError_429"):
+        assert is_transient(e), e
+    for e in (None, "", "refusal", "bad_json", "AuthenticationError", "BadRequestError", "APIStatusError_400", "APIStatusError_401"):
+        assert not is_transient(e), e
+
+
+class _Flaky:
+    """One adapter attempt: fails with `errors` in order, then succeeds."""
+    def __init__(self, errors):
+        self.errors, self.calls = list(errors), 0
+
+    def __call__(self):
+        self.calls += 1
+        if self.errors:
+            return LLMResult(error=self.errors.pop(0))
+        return LLMResult(data={"metric": "fcr"})
+
+
+def test_a_transient_failure_is_retried_with_exponential_backoff_then_succeeds():
+    waits = []
+    once = _Flaky(["RateLimitError", "APITimeoutError"])
+    res = route_with_retries(once, (1.0, 2.0), waits.append)
+    assert res.ok and res.attempts == 3 and once.calls == 3
+    assert 1.0 <= waits[0] <= 1.25 and 2.0 <= waits[1] <= 2.5                      # doubles, with a little jitter
+
+
+def test_retries_run_out_and_the_last_error_is_returned():
+    waits = []
+    once = _Flaky(["RateLimitError"] * 5)
+    res = route_with_retries(once, (1.0, 2.0), waits.append)
+    assert not res.ok and res.error == "RateLimitError" and res.attempts == 3 and len(waits) == 2
+
+
+@pytest.mark.parametrize("error", ["refusal", "bad_json", "AuthenticationError", "APIStatusError_400"])
+def test_a_failure_that_is_not_transient_is_never_retried(error):
+    once = _Flaky([error] * 3)
+    res = route_with_retries(once, (1.0, 2.0), lambda s: pytest.fail("slept"))
+    assert res.error == error and res.attempts == 1 and once.calls == 1
+
+
+def test_the_openai_adapter_retries_a_rate_limit_and_reports_attempts():
+    from router.llm_openai import OpenAIRouter
+
+    class RateLimitError(Exception): ...
+
+    class Twice(_FakeOpenAI):
+        n = 0
+
+        def _create(self, **kw):
+            Twice.n += 1
+            if Twice.n < 3:
+                raise RateLimitError()
+            return super()._create(**kw)
+
+    waits = []
+    r = OpenAIRouter("gpt-4o-mini", client=Twice(content=json.dumps(S("fcr"))), sleep=waits.append).route("s", "u", json_schema())
+    assert r.ok and r.attempts == 3 and len(waits) == 2 and r.cost_usd > 0
+
+
+def test_when_retries_fail_the_reply_is_busy_not_a_guess(farm_db):
+    from router import refusals
+    llm = FakeRouter(error="RateLimitError")
+    a = answer_question_v2("What was our feed cost last month?", farm_db, llm, today=TODAY)
+    assert (a.kind, a.code, a.text) == ("refusal", "llm_busy", refusals.LLM_BUSY) and "try again in a minute" in a.text
+    assert a.metric_id is None and a.scope is None                                  # nothing was computed
+    b = answer_question_v2("What was our feed cost last month?", farm_db, FakeRouter(error="bad_json"), today=TODAY)
+    assert b.code == "llm_unavailable"                                              # not transient: the other honest reply
+
+
+def test_a_busy_model_still_answers_the_exact_outage_phrases_only(farm_db):
+    a = answer_question_v2("How many pigs do we have?", farm_db, FakeRouter(error="RateLimitError"), today=TODAY)
+    assert a.kind == "answer" and a.metric_id == "active_headcount"
+    assert answer_question_v2("How many pigs do we have today?", farm_db, FakeRouter(error="RateLimitError"), today=TODAY).code == "llm_busy"
+
+
+def test_the_outage_fallback_is_small_and_labelled():
+    from router.pipeline import EXACT_PHRASES
+    import router.pipeline as pl
+    assert len(EXACT_PHRASES) == 13                                                 # the plan (section 22) documents this number
+    assert "OUTAGE FALLBACK" in pathlib.Path(pl.__file__).read_text()

@@ -102,8 +102,8 @@ class Pacer:
         time.sleep(max(0.0, start - now))
 
 
-def run_model(model, cases, expectations, repeats, workers, pace=0.0):
-    llm = make_client(model)                                   # raises Unavailable if the key or SDK is missing
+def run_model(model, cases, expectations, repeats, workers, pace=0.0, mode=None):
+    llm = make_client(model, **({"mode": mode} if mode and not model.startswith("claude") else {}))                                   # raises Unavailable if the key or SDK is missing
     pacer = Pacer(pace)
 
     def one(case, rep):
@@ -121,7 +121,7 @@ def run_model(model, cases, expectations, repeats, workers, pace=0.0):
                              "cost": ans.llm.cost_usd if ans.llm else 0.0,
                              "tokens_in": ans.llm.input_tokens if ans.llm else 0, "tokens_out": ans.llm.output_tokens if ans.llm else 0,
                              "spec": ans.spec.__dict__ if ans.spec else None, "notes": ans.notes,
-                             "llm_error": ans.llm.error if ans.llm else None}
+                             "llm_error": ans.llm.error if ans.llm else None, "attempts": ans.llm.attempts if ans.llm else 0}
         except Exception as e:
             return case.id, {"rep": rep, "outcome": "error", "reason": f"{type(e).__name__}: {e}"[:160], "cause": "harness:error",
                              "kind": "error", "code": "error", "text": "", "seconds": 0.0, "llm_seconds": 0.0, "cost": 0.0,
@@ -181,6 +181,7 @@ def summarise(results):
         "latency_llm_median_s": round(statistics.median(llm_s), 2) if llm_s else 0.0,
         "latency_llm_p95_s": round(_pct(llm_s, 95), 2),
         "llm_failures": sum(1 for x in runs if x["llm_error"]),
+        "llm_retried": sum(1 for x in runs if x.get("attempts", 1) > 1),
         "flaky": sum(r["flaky"] for r in results),
         "tokens_in_mean": round(statistics.mean([x["tokens_in"] for x in runs if x["tokens_in"]] or [0])),
     }
@@ -203,7 +204,7 @@ def print_report(model, s, results, elapsed):
     print(f"  clarified on answerable questions, by reason: {s['clarified_codes_on_answerable'] or 'none'}")
     print(f"  cost/question ${s['cost_per_question_usd']:.5f} (max ${s['max_cost_usd']:.5f})   latency e2e median {s['latency_e2e_median_s']}s "
           f"p95 {s['latency_e2e_p95_s']}s   (LLM only: median {s['latency_llm_median_s']}s p95 {s['latency_llm_p95_s']}s)   "
-          f"LLM failures {s['llm_failures']}   flaky {s['flaky']}   prompt ~{s['tokens_in_mean']} tokens")
+          f"LLM failures {s['llm_failures']} (retried calls {s['llm_retried']})   flaky {s['flaky']}   prompt ~{s['tokens_in_mean']} tokens")
     print(f"  target check: {meets_target(s)}")
 
 
@@ -228,6 +229,7 @@ def main():
     ap.add_argument("--models", default="gpt-4o-mini,gpt-4.1,claude-haiku-5-5")
     ap.add_argument("--repeats", type=int, default=3)
     ap.add_argument("--workers", type=int, default=8)
+    ap.add_argument("--mode", default=None, choices=["json_schema", "tool"], help="OpenAI structured-output mode (default: the adapter's)")
     ap.add_argument("--pace", type=float, default=0.0, help="minimum seconds between call starts (for tokens-per-minute limits)")
     ap.add_argument("--only", default="")
     ap.add_argument("--no-rebuild", action="store_true")
@@ -251,15 +253,15 @@ def main():
     for model in args.models.split(","):
         try:
             print(f"\n[{model}] running {len(cases)} cases x {args.repeats} ...", flush=True)
-            results, elapsed = run_model(model, cases, expectations, args.repeats, args.workers, args.pace)
+            results, elapsed = run_model(model, cases, expectations, args.repeats, args.workers, args.pace, args.mode)
         except Unavailable as e:
             print(f"[{model}] SKIPPED: {e}")
             skipped.append((model, str(e)))
             continue
         s = summarise(results)
         summaries[model] = s
-        (outdir / f"v2-{model}-{PROMPT_VERSION}-{stamp}.json").write_text(
-            json.dumps({"model": model, "prompt_version": PROMPT_VERSION, "summary": s, "results": results}, indent=2, default=str))
+        (outdir / f"v2-{model}-{PROMPT_VERSION}{'-' + args.mode if args.mode else ''}-{stamp}.json").write_text(
+            json.dumps({"model": model, "prompt_version": PROMPT_VERSION, "mode": args.mode or "default", "summary": s, "results": results}, indent=2, default=str))
         print_report(model, s, results, elapsed)
         if args.wrong:
             print_wrong(results)

@@ -29,7 +29,7 @@ from resolver import all_time_scope, resolve
 from resolver.periods import harare_today, normalise
 from router import crosscheck, refusals
 from router.categories import farm_categories, match_category
-from router.llm import LLMResult
+from router.llm import LLMResult, is_transient
 from router.prompt import PROMPT_VERSION, system_prompt, user_prompt
 from router.spec import RoutedSpec, json_schema, parse
 
@@ -49,7 +49,8 @@ _STOPWORDS = {
 }
 _FOLLOW_UP = re.compile(r"^\s*(and|what about|how about|same for|what of)\b")
 
-# Exact known phrases, answered even when the LLM is unavailable (and ONLY these): question -> (metric, domains)
+# OUTAGE FALLBACK, exact matches only. These 13 phrases are answered when (and only when) the LLM could not be used; with the model up
+# they are routed like any other question. Close is not exact: anything else gets the busy / unavailable reply. question -> (metric, domains)
 EXACT_PHRASES = {
     "how many pigs do we have": ("active_headcount", ("piggery",)),
     "how many chickens do we have": ("active_headcount", ("poultry",)),
@@ -176,10 +177,14 @@ def _answer(question, conn, llm, farm_code, today, dashboard_filter, week_start,
             if not spec.valid:
                 return _clarify("invalid_spec", refusals.COULD_NOT_READ, spec=spec, llm=llm_res, notes=spec.problems)
         else:
+            # OUTAGE FALLBACK ONLY (plan section 22): the model could not be used, so a question that exactly matches one of the few
+            # known phrases is answered by the registry; anything else is told the truth, never guessed.
             exact = EXACT_PHRASES.get(norm)
             if exact is None:
-                return _refuse("llm_unavailable", refusals.LLM_DOWN, llm=llm_res, notes=[llm_res.error])
-            spec = RoutedSpec(metric=exact[0], domains=exact[1])        # an exact known phrase, never a guess
+                busy = is_transient(llm_res.error)
+                return _refuse("llm_busy" if busy else "llm_unavailable", refusals.LLM_BUSY if busy else refusals.LLM_DOWN,
+                               llm=llm_res, notes=[llm_res.error, f"attempts={llm_res.attempts}"])
+            spec = RoutedSpec(metric=exact[0], domains=exact[1])
     return _continue(q, conn, llm_res, spec, farm_code, today, dashboard_filter, week_start, session)
 
 

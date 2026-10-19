@@ -381,7 +381,7 @@ Decisions, all agreed at the start of the step:
    Candidates: `gpt-4o-mini`, `gpt-4.1`; `claude-haiku-5-5` is skipped until an Anthropic key exists.
 6. **The model is pinned only after the comparison**, and provisionally until the locked-set run at Gate A (`router.llm.PINNED_MODEL`).
 7. **If the LLM call fails, the bot falls back to the phrase tier for exact matches only** (`EXACT_PHRASES` in `router/pipeline.py`, 13
-   phrases) and otherwise says it cannot process questions right now. It never guesses. No retries: a failed call is reported.
+   phrases) and otherwise says it cannot process questions right now. It never guesses. (Retries with backoff were added afterwards: section 22.)
 8. **Session state remembers clarification choices.** The session record holds the previous metric (for "and for poultry?"), the pending
    clarifying question with what each option means (so "1" or "reply 2" is applied to it), and any choice between two named metrics,
    which is not asked again in that conversation. A reply settles only its own disagreement; any other check still runs.
@@ -427,3 +427,64 @@ outside the timed section); the first two gpt-4.1 attempts were discarded becaus
 | 9 Per-group cutover | Headcount, then money, then the rest; each only when eval and shadow results pass; manual Render deploys, verified live. `grounding.py` and the old engine stay until the end of this step. | Live wrong rate per group. |
 | 10 Gate B pilot | The client uses it: held-out run (zero wrong in at least 200 independent money and headcount questions), sync gates and the data-quality report live. | Pilot traffic evidence. |
 | 11 Gate C claim | At most X wrong in N untuned questions at 95% confidence, clusters counted once, pinned model named. The old engine is deleted after the claim and one clean pilot month. | The 0.5% statement. |
+
+## 22. Step 5 follow-ups (2026-10-19)
+
+**Retries and the busy reply.** The router retries transient failures only (rate limit, timeout, connection error, HTTP 408, 409, 429,
+5xx, 529): three attempts, waiting about 1 s and then 2 s with 25% jitter (`router.llm.RETRY_DELAYS`). Failures that retrying cannot fix are
+never retried: a refusal, bad JSON, bad credentials, and an **exhausted account** (OpenAI's `insufficient_quota` arrives as HTTP 429 but is
+not a rate limit, so it is reported as `InsufficientQuota`). When retries run out on a transient failure the reply is "I'm busy right now
+and couldn't process that. Please try again in a minute." (code `llm_busy`); for any other failure it is the "can't process questions right
+now" reply (`llm_unavailable`). Nothing is computed or guessed in either case. The latency figures include the waits.
+
+**The phrase tier is an outage fallback for exact matches only.** `EXACT_PHRASES` in `router/pipeline.py` holds **13** phrases (pigs,
+chickens and animals headcount; batches; sows; profit; revenue (two wordings); who owes us (two wordings); total expenses; feed cost; feed
+left). It answers only when the model could not be used and the whole question, after normalising case and punctuation, equals one of them.
+With the model up they are routed like any other question. A test pins the size at 13, so growing it is a visible, reviewed change.
+
+**Why gpt-4o-mini refused a plain "total feed cost" about one repeat in three (cases sc01, sc07).** Temperature is 0 in the adapter
+(confirmed by a test), but OpenAI chat models are not deterministic at temperature 0 (the responses carried more than one system
+fingerprint). On a probe of 30 calls per setting with prompt v4 and the question "What's our total feed cost?":
+
+| Model, setting | Routed to `feed_consumed_cost` | Routed to `none` | Cost / call |
+|---|---|---|---|
+| gpt-4o-mini, json_schema (current), temperature 0 | 0 | 30 | $0.00049 |
+| gpt-4o-mini, json_schema, temperature 0, fixed seed | 0 | 30 | $0.00049 |
+| gpt-4o-mini, forced strict function call | 30 | 0 | $0.00050 |
+| gpt-4.1, json_schema | 30 | 0 | $0.00657 |
+| gpt-4.1, forced strict function call | 30 | 0 | $0.00671 |
+
+On that one question the mode decides the outcome, at the same cost, and gpt-4.1 is correct in both modes at about 13 times the cost. But
+the probe overstates it. The same json_schema setting gave `none` 30 of 30 times in the probe and only 1 in 3 in the eval an hour earlier,
+so the backend varies over time. And on the **full dev set the forced function call is no better**: it fixes sc01 and sc07 but other
+borderline cases of the smaller model flip to refusals or clarifications instead.
+
+| gpt-4o-mini, prompt v4, 176 cases x 3 | Correct | Wrong | Refused | Clarified | Cases that flipped in some repeat |
+|---|---|---|---|---|---|
+| json_schema (default) | 165 (93.8%) | 0 | 3 | 8 (4.5%) | 3 (sc01, wt04, hy04) |
+| forced tool call | 165 (93.8%) | 0 | 4 | 7 (4.0%) | 4 (rv05, wt04, wx02, cr02) |
+
+So the roughly one-in-three refusals are the smaller model's uncertainty on borderline wording, which moves around between settings and runs
+rather than going away. The default stays `json_schema` (the mode of every figure here); `tool` stays available as an option. If a
+borderline false refusal matters for the pilot, gpt-4.1 (0 refused, 6 clarified) is the remedy, at the cost shown above.
+
+**Property test.** `tests/test_registry_declared_combinations.py` runs every registry metric with every dimension it declares (and every
+dimension the router's validator lets through), every aggregation and grain, alone and combined, in every domain scope it supports: 138
+cases. Reverting the revenue `domain` fix makes 8 of them fail. A second test pins the validator to the registry's own declarations.
+
+**An interruption worth recording.** Partway through this round every call returned HTTP 429 `insufficient_quota` ("You have no
+credits remaining") for a while, then worked again. That run was discarded and is not in the figures; the results here were taken with
+credit. It is why an exhausted account now has its own non-retried error: it must not be reported as "busy, try again in a minute".
+
+### Headline results (dev set, 176 cases, 3 repeats, prompt v4, `json_schema` mode)
+
+| Model | Correct | Wrong (by cause) | Refused | Clarified | Cost / question | Latency median / p95 |
+|---|---|---|---|---|---|---|
+| gpt-4o-mini | 165 (93.8%) | 0 | 3 (1.7%) | 8 (4.5%) | $0.00048 | 0.81 s / 1.02 s |
+| gpt-4.1 | 170 (96.6%) | 0 | 0 | 6 (3.4%) | $0.00640 | 0.64 s / 0.76 s |
+| claude-haiku-5-5 | not run (no Anthropic key) | | | | | |
+
+Money and headcount: 0 wrong of 117 for both. **Gate A, "dev wrong rate at most 2%", is met (0% for both), but the dev figures were tuned
+against: the prompt and the cross-checks were changed in response to dev cases, so 0% is not an estimate of the held-out rate.** The other
+Gate A items (every launch metric has a definition, template, parity test and eval cases; resolver and rendering tests pass; the model is
+chosen and pinned) were not re-audited in this round, and the pin is provisional with one of the three candidates untested.

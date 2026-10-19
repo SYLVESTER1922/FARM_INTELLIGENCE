@@ -4,16 +4,25 @@ import json
 import os
 import time
 
-from router.llm import LLMResult, Unavailable, cost_usd
+from router.llm import RETRY_DELAYS, LLMResult, Unavailable, cost_usd, route_with_retries
 
-TIMEOUT_S = 15.0           # fail closed: no retries, a slow or failed call is reported, never papered over (plan D11)
+TIMEOUT_S = 15.0
+MODES = ("json_schema", "tool")
+# "json_schema" is what every dev-set figure in the plan was measured with. "tool" forces a strict function call instead: on one probe
+# (gpt-4o-mini, a plain "total feed cost", 30 calls each) json_schema answered "none" 30 of 30 and tool routed correctly 30 of 30, at the
+# same cost. It becomes the default only after a full dev run confirms it (plan section 22).
+DEFAULT_MODE = "json_schema"           # fail closed: no retries, a slow or failed call is reported, never papered over (plan D11)
 
 
 class OpenAIRouter:
     provider = "openai"
 
-    def __init__(self, model: str, client=None, timeout: float = TIMEOUT_S):
-        self.model = model
+    def __init__(self, model: str, client=None, timeout: float = TIMEOUT_S, retry_delays=RETRY_DELAYS, sleep=time.sleep,
+                 mode: str = DEFAULT_MODE):
+        if mode not in MODES:
+            raise ValueError(f"mode must be one of {MODES}")
+        self.model, self.mode = model, mode
+        self._delays, self._sleep = retry_delays, sleep
         if client is None:
             if not os.environ.get("OPENAI_API_KEY"):
                 raise Unavailable("OPENAI_API_KEY is not set in the environment")
@@ -22,12 +31,17 @@ class OpenAIRouter:
         self._client = client
 
     def route(self, system: str, user: str, schema: dict) -> LLMResult:
+        return route_with_retries(lambda: self._route_once(system, user, schema), self._delays, self._sleep)
+
+    def _route_once(self, system: str, user: str, schema: dict) -> LLMResult:
         res = LLMResult(model=self.model, provider=self.provider)
-        kwargs = dict(
-            model=self.model,
-            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
-            response_format={"type": "json_schema", "json_schema": {"name": "farm_route", "strict": True, "schema": schema}},
-        )
+        kwargs = dict(model=self.model, messages=[{"role": "system", "content": system}, {"role": "user", "content": user}])
+        if self.mode == "tool":
+            kwargs["tools"] = [{"type": "function", "function": {"name": "route", "description": "Fill in the routing form for the question.",
+                                                                "parameters": schema, "strict": True}}]
+            kwargs["tool_choice"] = {"type": "function", "function": {"name": "route"}}
+        else:
+            kwargs["response_format"] = {"type": "json_schema", "json_schema": {"name": "farm_route", "strict": True, "schema": schema}}
         # Reasoning models (gpt-5*, o-series) take no temperature and use max_completion_tokens; chat models are pinned to 0.
         if self.model.startswith(("gpt-5", "o1", "o3", "o4")):
             kwargs["max_completion_tokens"] = 1500
@@ -39,7 +53,8 @@ class OpenAIRouter:
             resp = self._client.chat.completions.create(**kwargs)
         except Exception as e:                                   # timeout, rate limit, connection, bad request ...
             res.latency_s = time.perf_counter() - t0
-            res.error = type(e).__name__
+            # A 429 for an exhausted account is not a rate limit: waiting a minute will not fix it, so it is not retried.
+            res.error = "InsufficientQuota" if getattr(e, "code", None) == "insufficient_quota" else type(e).__name__
             return res
         res.latency_s = time.perf_counter() - t0
         usage = getattr(resp, "usage", None)
@@ -47,10 +62,11 @@ class OpenAIRouter:
             res.input_tokens, res.output_tokens = usage.prompt_tokens, usage.completion_tokens
         res.cost_usd = cost_usd(self.model, res.input_tokens, res.output_tokens)
         choice = resp.choices[0]
-        res.raw = choice.message.content or ""
         if getattr(choice.message, "refusal", None):
             res.error = "refusal"
             return res
+        calls = getattr(choice.message, "tool_calls", None) or []
+        res.raw = calls[0].function.arguments if calls else (choice.message.content or "")
         try:
             res.data = json.loads(res.raw)
         except (json.JSONDecodeError, TypeError):

@@ -26,6 +26,7 @@ NAMED = {
 }
 
 LLM_DOWN = "I can't process questions right now. Please try again in a few minutes."
+LLM_BUSY = "I'm busy right now and couldn't process that. Please try again in a minute."
 COULD_NOT_READ = ("I couldn't tell what you're asking. Could you say it another way, for example "
                   "\"how many pigs do we have?\" or \"what was our feed cost last month?\"")
 NO_SUBJECT = ("Could you clarify what you'd like to know? For example, a section of the farm (piggery, poultry, crops), a "

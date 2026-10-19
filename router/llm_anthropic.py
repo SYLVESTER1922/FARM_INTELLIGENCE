@@ -10,7 +10,7 @@ import json
 import os
 import time
 
-from router.llm import LLMResult, Unavailable, cost_usd
+from router.llm import RETRY_DELAYS, LLMResult, Unavailable, cost_usd, route_with_retries
 
 TIMEOUT_S = 15.0
 
@@ -18,8 +18,9 @@ TIMEOUT_S = 15.0
 class AnthropicRouter:
     provider = "anthropic"
 
-    def __init__(self, model: str, client=None, timeout: float = TIMEOUT_S):
+    def __init__(self, model: str, client=None, timeout: float = TIMEOUT_S, retry_delays=RETRY_DELAYS, sleep=time.sleep):
         self.model = model
+        self._delays, self._sleep = retry_delays, sleep
         if client is None:
             if not (os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")):
                 raise Unavailable("no ANTHROPIC_API_KEY (or ANTHROPIC_AUTH_TOKEN) in the environment")
@@ -31,6 +32,9 @@ class AnthropicRouter:
         self._client = client
 
     def route(self, system: str, user: str, schema: dict) -> LLMResult:
+        return route_with_retries(lambda: self._route_once(system, user, schema), self._delays, self._sleep)
+
+    def _route_once(self, system: str, user: str, schema: dict) -> LLMResult:
         import anthropic
 
         res = LLMResult(model=self.model, provider=self.provider)
