@@ -21,25 +21,27 @@ import re
 import time
 from dataclasses import dataclass, field
 
+from catalog.build import help_text, limits_text
 from registry import REGISTRY, Scope, compute
 from registry.core import latest_log_date
 from render import RenderContext, render
 from render.constants import GREETING
 from resolver import all_time_scope, resolve
 from resolver.periods import harare_today, normalise
-from router import crosscheck, refusals
+from router import alerts, crosscheck, refusals
 from router.categories import farm_categories, match_category
 from router.llm import LLMResult, is_transient
 from router.prompt import PROMPT_VERSION, system_prompt, user_prompt
 from router.spec import RoutedSpec, json_schema, parse
 
-HELP = ("I can answer questions about your farm's piggery, poultry and crops records: headcount and batches, deaths and "
-        "mortality, feed cost, expenses, revenue and profit, who owes you money, weights and feed conversion, breeding, "
-        "feed stock, health events and weather. Try \"how many pigs do we have?\" or \"what was our feed cost last month?\".")
+HELP = None                                  # generated from the registry on use: catalog.build.help_text()
 
 _GREETINGS = {"hi", "hello", "hey", "hie", "yo", "hi there", "hello there", "hey there", "good morning", "good afternoon", "good evening"}
 _HELPS = {"help", "what can you ask", "what can i ask", "what can i ask you", "what questions can i ask", "what do you do",
-          "how does this work", "what are you able to answer"}
+          "how does this work", "what are you able to answer", "what can you answer", "what can you tell me", "what do you track",
+          "what data do you have", "what can you do"}
+_LIMITS = {"what can t you answer", "what can you not answer", "what don t you know", "what can t you tell me", "what do you not track",
+           "what don t you track", "what are your limits"}
 
 _STOPWORDS = {
     "how", "what", "why", "when", "where", "who", "which", "is", "are", "was", "were", "do", "does", "did", "doing", "done",
@@ -125,16 +127,16 @@ def _refuse(code, text, claim=False, **kw):
 
 
 def answer_question_v2(question: str, conn, llm, *, farm_code: str = "NIS-001", today=None, dashboard_filter=None,
-                       week_start: int = 0, session: dict = None) -> V2Answer:
+                       week_start: int = 0, session: dict = None, quota_alert=alerts.report_quota_error) -> V2Answer:
     t0 = time.perf_counter()
-    ans = _answer(question, conn, llm, farm_code, today or harare_today(), dashboard_filter, week_start, session)
+    ans = _answer(question, conn, llm, farm_code, today or harare_today(), dashboard_filter, week_start, session, quota_alert)
     ans.seconds = time.perf_counter() - t0
     if session is not None and ans.kind == "answer" and ans.metric_id:
         session["last_metric"] = ans.metric_id
     return ans
 
 
-def _answer(question, conn, llm, farm_code, today, dashboard_filter, week_start, session):
+def _answer(question, conn, llm, farm_code, today, dashboard_filter, week_start, session, quota_alert=None):
     q = (question or "").strip()
     norm = normalise(q)
     pending = session.pop("pending", None) if session is not None else None    # a question is only ever answered once
@@ -143,7 +145,9 @@ def _answer(question, conn, llm, farm_code, today, dashboard_filter, week_start,
     if norm in _GREETINGS:
         return V2Answer(text=GREETING, kind="answer", code="greeting")
     if norm in _HELPS:
-        return V2Answer(text=HELP, kind="answer", code="help")
+        return V2Answer(text=help_text(), kind="answer", code="help")
+    if norm in _LIMITS:
+        return V2Answer(text=limits_text(), kind="answer", code="help")
 
     # ---- a numbered reply to the clarifying question just asked
     reply = _REPLY.match(norm)
@@ -154,8 +158,8 @@ def _answer(question, conn, llm, farm_code, today, dashboard_filter, week_start,
             return _clarify("reply_out_of_range", f"Please reply with a number from 1 to {len(pending['values'])}.",
                             metric_id=pending["spec"].metric, spec=pending["spec"])
         value = pending["values"][n - 1]
-        if pending["code"] == "ambiguous_metric":                                 # asked and answered: do not ask again
-            session.setdefault("metric_choice", {})[tuple(sorted(pending["spec"].ambiguous_between))] = value
+        if pending.get("memory_key"):                                             # asked and answered: do not ask again
+            session.setdefault("metric_choice", {})[pending["memory_key"]] = value
         return _continue(pending["question"], conn, pending["llm"], pending["spec"], farm_code, today, dashboard_filter,
                          week_start, session, choice=(pending["code"], value))
     if reply:                                                                    # a bare number with nothing to answer
@@ -179,6 +183,8 @@ def _answer(question, conn, llm, farm_code, today, dashboard_filter, week_start,
         else:
             # OUTAGE FALLBACK ONLY (plan section 22): the model could not be used, so a question that exactly matches one of the few
             # known phrases is answered by the registry; anything else is told the truth, never guessed.
+            if llm_res.error == "InsufficientQuota" and quota_alert is not None:     # logged, and emailed once a day (router/alerts.py)
+                quota_alert(conn, llm_res, farm_code=farm_code)
             exact = EXACT_PHRASES.get(norm)
             if exact is None:
                 busy = is_transient(llm_res.error)
@@ -188,10 +194,12 @@ def _answer(question, conn, llm, farm_code, today, dashboard_filter, week_start,
     return _continue(q, conn, llm_res, spec, farm_code, today, dashboard_filter, week_start, session)
 
 
-def _remember(session, q, llm_res, spec, code, options, values):
-    """Keep the clarifying question that was just asked, so the user's reply can be applied to it."""
+def _remember(session, q, llm_res, spec, code, options, values, memory_key=None):
+    """Keep the clarifying question that was just asked, so the user's reply can be applied to it. `memory_key` names a choice between
+    two metrics that, once made, is remembered for the rest of the conversation."""
     if session is not None:
-        session["pending"] = {"question": q, "llm": llm_res, "spec": spec, "code": code, "options": options, "values": values}
+        session["pending"] = {"question": q, "llm": llm_res, "spec": spec, "code": code, "options": options, "values": values,
+                              "memory_key": memory_key}
 
 
 def _continue(q, conn, llm_res, spec, farm_code, today, dashboard_filter, week_start, session, choice=None):
@@ -222,7 +230,7 @@ def _continue(q, conn, llm_res, spec, farm_code, today, dashboard_filter, week_s
             ids = list(spec.ambiguous_between[:3])
             opts = [crosscheck.option(m) for m in ids]
             text = crosscheck._numbered("I can read that more than one way. Do you mean:", opts)
-            _remember(session, q, llm_res, spec, "ambiguous_metric", opts, ids)
+            _remember(session, q, llm_res, spec, "ambiguous_metric", opts, ids, tuple(sorted(spec.ambiguous_between)))
             return _clarify("ambiguous_metric", text, spec=spec, llm=llm_res)
     if spec.metric is None:
         code = spec.refusal or "out_of_scope"
@@ -240,8 +248,13 @@ def _continue(q, conn, llm_res, spec, farm_code, today, dashboard_filter, week_s
 
     metric = REGISTRY[spec.metric]
     bad = None if chosen_code in ("ambiguous_metric", "metric") else crosscheck.metric_disagreement(q, spec)
+    if bad and sorted(bad.values) == sorted(crosscheck.FEED_PAIR):                # a feed-spend question asked and answered before
+        remembered = ((session or {}).get("metric_choice") or {}).get(tuple(sorted(crosscheck.FEED_PAIR)))
+        if remembered:
+            spec, metric, bad = dataclasses.replace(spec, metric=remembered), REGISTRY[remembered], None
     if bad:
-        _remember(session, q, llm_res, spec, "metric", bad.options, bad.values)
+        _remember(session, q, llm_res, spec, "metric", bad.options, bad.values,
+                  tuple(sorted(crosscheck.FEED_PAIR)) if sorted(bad.values) == sorted(crosscheck.FEED_PAIR) else None)
         return _clarify("disagree_metric", bad.message, metric_id=spec.metric, spec=spec, llm=llm_res)
 
     # ---- scope: the resolver reads the period and domains from the same words
@@ -251,6 +264,17 @@ def _continue(q, conn, llm_res, spec, farm_code, today, dashboard_filter, week_s
         if u.code in ("month_without_year", "multiple_periods"):
             return _clarify(u.code, u.message, metric_id=spec.metric, spec=spec, llm=llm_res)
         return _refuse(u.code, u.message, metric_id=spec.metric, spec=spec, llm=llm_res)
+
+    if res.scope.batch_code and not spec.follow_up:                                 # a batch code the farm does not have
+        known = [r[0] for r in conn.execute("SELECT batch_code FROM pig_batches UNION ALL SELECT batch_code FROM poultry_batches ORDER BY 1")]
+        if res.scope.batch_code not in known:
+            import difflib
+            squash = lambda c: c.replace("-", "").upper()
+            close = difflib.get_close_matches(squash(res.scope.batch_code), [squash(k) for k in known], n=1, cutoff=0.7)
+            guess = next((k for k in known if close and squash(k) == close[0]), None)
+            return _clarify("unknown_batch", f"I don't see a batch {res.scope.batch_code}."
+                            + (f" Did you mean {guess}?" if guess else "") + f" The batches are: {', '.join(known)}.",
+                            metric_id=spec.metric, spec=spec, llm=llm_res)
 
     if not spec.follow_up:
         problems = [d for d in crosscheck.check(q, spec, metric, res, dashboard_filter) if d.code != chosen_code]

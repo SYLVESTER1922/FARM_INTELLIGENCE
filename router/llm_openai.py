@@ -55,6 +55,8 @@ class OpenAIRouter:
             res.latency_s = time.perf_counter() - t0
             # A 429 for an exhausted account is not a rate limit: waiting a minute will not fix it, so it is not retried.
             res.error = "InsufficientQuota" if getattr(e, "code", None) == "insufficient_quota" else type(e).__name__
+            if res.error == "InsufficientQuota":
+                res.detail = str(e)[:300]
             return res
         res.latency_s = time.perf_counter() - t0
         usage = getattr(resp, "usage", None)

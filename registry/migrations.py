@@ -47,6 +47,22 @@ MIGRATIONS = [
                PRIMARY KEY (farm_code, key)
            )""",
     ]),
+    ("004_llm_quota_log", [
+        # Every insufficient_quota error from a model provider (router/alerts.py). `notified` marks the row that triggered the day's email.
+        """CREATE TABLE IF NOT EXISTS llm_quota_log (
+               id SERIAL PRIMARY KEY,
+               logged_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+               day DATE NOT NULL,
+               farm_code TEXT,
+               provider TEXT NOT NULL,
+               model TEXT NOT NULL,
+               error TEXT NOT NULL,
+               detail TEXT,
+               notified BOOLEAN NOT NULL DEFAULT false,
+               notify_error TEXT
+           )""",
+        "CREATE INDEX IF NOT EXISTS llm_quota_log_day ON llm_quota_log (day)",
+    ]),
 ]
 
 

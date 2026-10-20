@@ -37,3 +37,8 @@ Dev, gpt-4o-mini, 3 repeats: 162/176 correct (92.0%), 0 wrong, 4 refused, 10 cla
 ## v4
 Removed the invented "outside the farm's records" example added in v3: with it, gpt-4o-mini answered `none` for a plain total feed cost
 in two of three repeats. The other v3 additions stay.
+
+## v5 (2026-10-19)
+The refusal vocabulary is now generated from the curated list in `catalog/untracked.py` (step 6) instead of written in the prompt: three
+refusal classes were added for data that IS recorded but that no metric reads (`staff_info`, `crop_scouting`, `field_operations`) and
+one for payroll history. No other rule changed. Measured after the change: see plan section 24.

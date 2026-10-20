@@ -8,6 +8,7 @@ reason code. Pure code, no database, no LLM.
 import re
 from dataclasses import dataclass, field
 
+from catalog.untracked import KNOWN
 from registry import REGISTRY, label
 from render.templates import TITLES
 from resolver.periods import has_all_time_words, normalise
@@ -63,13 +64,7 @@ _BREAKDOWN_CUES = re.compile(r"\b(by|per|each|every|split|splits|breakdown|break
 
 # A named refusal that says "this is not tracked" must be backed by the user's own words; a model alone never gets to say it (plan
 # section 4). If the words are not there the answer is a question, not a claim.
-_REFUSAL_WORDS = {
-    "current_sickness": re.compile(r"\b(sick|sickness|ill|illness|unwell|diseas\w*|infect\w*|outbreak|symptom\w*)\b"),
-    "forecast_weather": re.compile(r"\b(forecast|tomorrow|next (?:week|month|few days)|will it|going to rain|predict\w*|expected)\b"),
-    "equipment": re.compile(r"\b(tractor|tractors|machine|machinery|machines|equipment|vehicle|vehicles|truck|trucks|generator|pump|serviced?|repairs?)\b"),
-    "company_info": re.compile(r"\b(owner|owners|owns|owned|ownership|company|registered|registration|director|directors|shareholders?|legal|incorporated)\b"),
-    "write_action": re.compile(r"\b(delete|remove|update|change|edit|add|create|insert|erase|drop|modify|overwrite)\b"),
-}
+_REFUSAL_WORDS = {u.code: u.cues for u in KNOWN if u.cues is not None}
 # Treatment wording: "being treated for illness" is a question about logged treatment events as much as about sickness now.
 _TREATMENT_WORDS = re.compile(r"\b(treat\w*|vaccin\w*|medicat\w*|vet|vets|injected|dosed)\b")
 
@@ -93,20 +88,33 @@ _ACCOUNTS_PAYABLE = re.compile(r"\b(do we owe|are we owing|we owe|what we owe|wh
                                r"bills?\b.*\bto pay|(?:pay|paying) (?:our |the )?(?:suppliers?|creditors?|bills))\b")
 
 # A refusal the wording does not back, or that reads two ways, becomes a question between the nearest tracked metric and "not tracked".
-NEAR_METRIC = {"accounts_payable": "receivables", "current_sickness": "health_events", "forecast_weather": "weather"}
-NOT_TRACKED_OPTION = {
-    "accounts_payable": "Money the farm owes others (not recorded; I can explain what is)",
-    "current_sickness": "Whether an animal is sick right now (not recorded; I can explain what is logged)",
-    "forecast_weather": "A weather forecast (not recorded; only past weather is logged)",
-}
+NEAR_METRIC = {u.code: u.near_metric for u in KNOWN if u.near_metric}
+NOT_TRACKED_OPTION = {u.code: u.option for u in KNOWN if u.near_metric}
 
 
 def accounts_payable_wording(question: str) -> bool:
     return bool(_ACCOUNTS_PAYABLE.search(normalise(question)))
 
 
+# Money spent on feed, with nothing saying whether it was bought or eaten: the prompt's rule, enforced here so a model cannot answer it
+# silently as one or the other (or as an expense category). "feed cost" alone is the consumed cost and is not asked about.
+_FEED_WORD = re.compile(r"\b(feed|feeds|chikafu|ukudla)\b")
+_SPEND_WORD = re.compile(r"\b(spend|spent|spending|expense|expenses|expenditure|paid|pay|paying)\b")
+_FEED_CLEAR = re.compile(r"\b(bought|buy|buying|purchas\w*|fed|feeding|eat|eaten|ate|used|use|consum\w*)\b")
+FEED_PAIR = ("feed_consumed_cost", "feed_purchases")
+
+
+def feed_spend_unclear(question) -> bool:
+    t = normalise(question)
+    return bool(_FEED_WORD.search(t) and _SPEND_WORD.search(t) and not _FEED_CLEAR.search(t))
+
+
 def metric_disagreement(question, spec):
     t = normalise(question)
+    if spec.metric in ("expenses", *FEED_PAIR) and feed_spend_unclear(question):
+        ids = list(FEED_PAIR)
+        return Disagreement("metric", _numbered("I can read that more than one way. Do you mean:", [option(m) for m in ids]),
+                            [option(m) for m in ids], ids)
     for rx, allowed in _CUES:
         if rx.search(t) and spec.metric and spec.metric not in allowed:
             return Disagreement(

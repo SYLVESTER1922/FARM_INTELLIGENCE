@@ -13,6 +13,7 @@ cost per question, median and p95 latency, and every wrong case with its cause. 
 
 import argparse
 import collections
+import dataclasses
 import concurrent.futures as cf
 import datetime as dt
 import json
@@ -208,6 +209,35 @@ def print_report(model, s, results, elapsed):
     print(f"  target check: {meets_target(s)}")
 
 
+def variant_breakdown(results, kind_of):
+    """Rates per variant kind, and per cluster (all variants of one source question count once; a cluster is wrong if any variant is)."""
+    out = {}
+    for kind in sorted(set(kind_of.values())):
+        rs = [r for r in results if kind_of.get(r["id"]) == kind]
+        n = len(rs)
+        c = collections.Counter(r["outcome"] for r in rs)
+        out[kind] = {"n": n, **{k: c[k] for k in ("correct", "wrong", "refused", "clarified", "error")},
+                     **{f"{k}_pct": round(100 * c[k] / n, 1) for k in ("correct", "wrong", "refused", "clarified")}}
+    return out
+
+
+def print_variant_report(results, kind_of, source_of, baseline):
+    bd = variant_breakdown(results, kind_of)
+    print("\n  VARIANTS BY KIND (generated, untuned):")
+    for kind, b in bd.items():
+        print(f"   {kind:<11} n={b['n']:<4} correct {b['correct_pct']:>5}%  wrong {b['wrong']} ({b['wrong_pct']}%)  "
+              f"refused {b['refused_pct']:>5}%  clarified {b['clarified_pct']:>5}%")
+    clusters = collections.defaultdict(list)
+    for r in results:
+        clusters[source_of[r["id"]]].append(r["outcome"])
+    wrong_clusters = sorted(k for k, v in clusters.items() if "wrong" in v)
+    print(f"   clusters (one per source question): {len(clusters)}; with a wrong variant: {len(wrong_clusters)} {wrong_clusters}")
+    if baseline:
+        b = baseline["summary"]
+        print(f"   tuned dev set, same model: correct {b['correct_pct']}%  wrong {b['wrong_pct']}%  refused {b['refused_pct']}%  clarified {b['clarified_pct']}%")
+    return bd, wrong_clusters
+
+
 def print_wrong(results):
     wrong = [r for r in results if r["outcome"] == "wrong"]
     print(f"\n  WRONG CASES ({len(wrong)}):")
@@ -232,6 +262,9 @@ def main():
     ap.add_argument("--mode", default=None, choices=["json_schema", "tool"], help="OpenAI structured-output mode (default: the adapter's)")
     ap.add_argument("--pace", type=float, default=0.0, help="minimum seconds between call starts (for tokens-per-minute limits)")
     ap.add_argument("--only", default="")
+    ap.add_argument("--variants", default="", help="run the generated variants in this JSON file instead of the dev questions")
+    ap.add_argument("--kinds", default="typo,paraphrase,mixed")
+    ap.add_argument("--baseline", default="", help="a tuned dev-run JSON of the same model, to print beside the variants")
     ap.add_argument("--no-rebuild", action="store_true")
     ap.add_argument("--wrong", action="store_true", help="print every wrong case")
     args = ap.parse_args()
@@ -239,6 +272,18 @@ def main():
     checked_database_url()
     load_openai_key()
     cases = load_cases(include_locked=False)                    # dev only; a locked case is refused
+    kind_of = source_of = None
+    if args.variants:
+        from evals import variants as V
+        from evals.case_specs import SPECS as _SPECS
+        base = {c.id: c for c in cases}
+        vs = V.load(args.variants, tuple(args.kinds.split(",")))
+        cases = [dataclasses.replace(base[v["source_id"]], id=v["id"], question=v["question"], source="generated") for v in vs]
+        for v in vs:
+            if v["source_id"] in _SPECS:
+                _SPECS[v["id"]] = _SPECS[v["source_id"]]
+        kind_of = {v["id"]: v["kind"] for v in vs}
+        source_of = {v["id"]: v["source_id"] for v in vs}
     if args.only:
         keep = set(args.only.split(","))
         cases = [c for c in cases if c.id in keep]
@@ -260,8 +305,15 @@ def main():
             continue
         s = summarise(results)
         summaries[model] = s
-        (outdir / f"v2-{model}-{PROMPT_VERSION}{'-' + args.mode if args.mode else ''}-{stamp}.json").write_text(
-            json.dumps({"model": model, "prompt_version": PROMPT_VERSION, "mode": args.mode or "default", "summary": s, "results": results}, indent=2, default=str))
+        label = "variants-" if args.variants else ""
+        extra = {}
+        if args.variants:
+            baseline = json.loads(Path(args.baseline).read_text()) if args.baseline else None
+            bd, wc = print_variant_report(results, kind_of, source_of, baseline)
+            extra = {"by_kind": bd, "wrong_clusters": wc, "generated": True}
+        (outdir / f"v2-{label}{model}-{PROMPT_VERSION}{'-' + args.mode if args.mode else ''}-{stamp}.json").write_text(
+            json.dumps({"model": model, "prompt_version": PROMPT_VERSION, "mode": args.mode or "default", "summary": s, **extra,
+                        "results": results}, indent=2, default=str))
         print_report(model, s, results, elapsed)
         if args.wrong:
             print_wrong(results)

@@ -10,6 +10,7 @@ words it saw; the scope resolver reads the same words independently, and any dis
 import re
 from dataclasses import dataclass, field
 
+from catalog.untracked import KNOWN, OUT_OF_SCOPE
 from registry import REGISTRY
 
 NONE = "none"                                     # sentinel in place of null, so one schema works across providers
@@ -18,8 +19,7 @@ DOMAINS = ("piggery", "poultry", "crops", "shared")
 DIMENSIONS = (NONE, "domain", "category", "buyer", "product", "batch")
 AGGREGATIONS = ("total", "avg_per_week")
 GRAINS = (NONE, "month")
-REFUSALS = (NONE, "accounts_payable", "current_sickness", "forecast_weather", "equipment", "company_info",
-            "write_action", "out_of_scope")
+REFUSALS = (NONE, *(u.code for u in KNOWN), OUT_OF_SCOPE[0])        # the curated list in catalog/untracked.py
 
 # Which dimensions a metric accepts (the registry's own declaration, plus the default 'domain' view for the money metrics).
 _REGISTRY_DIMS = {m.id: set(m.dimensions) for m in REGISTRY.values()}

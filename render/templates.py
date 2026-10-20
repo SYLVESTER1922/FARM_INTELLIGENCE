@@ -53,6 +53,8 @@ def feed_purchases(r, fig, rows, c):
 
 def expenses(r, fig, rows, c):
     suffix = {"domain": " by domain", "category": " by category", "month": " by month"}.get(fig["dimension"], "")
+    if r.scope.category:                                     # a category question must say so on the first line
+        suffix += f" ({r.scope.category} only)"
     lines = [f"Total: {c.money(fig['total'])}"]
     monthly = any(row.get("month") for row in rows)
     for row in (rows if monthly else _desc(rows, "total")):

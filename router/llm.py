@@ -41,6 +41,7 @@ class LLMResult:
     output_tokens: int = 0
     latency_s: float = 0.0
     cost_usd: float = 0.0
+    detail: str = ""                   # the provider's own message for a quota error (never a key), for the alert log
     attempts: int = 1                  # calls made (more than 1 means a transient failure was retried)
 
     @property
@@ -98,9 +99,12 @@ def timed(fn):
     return value, time.perf_counter() - t0
 
 
-# PROVISIONAL pin (plan section 20): the cheapest candidate that met the routing target on the dev set. Re-run the comparison before
-# it is treated as final, and again before any change; the locked set is not used to choose it.
-PINNED_MODEL = "gpt-4o-mini"
+# PROVISIONAL pin (plan section 23): gpt-4.1 in json_schema mode. gpt-4o-mini is cheaper (about 13 times) and stays selectable
+# (`make_client("gpt-4o-mini")`, `--model`), but it refused a plain "total feed cost" in 30 of 30 probe calls in its default mode and
+# in about one repeat in three in the dev eval. gpt-4.1 is under the 1-cent ceiling. Re-run the comparison before this is final; the
+# locked set is not used to choose it.
+PINNED_MODEL = "gpt-4.1"
+CHEAP_MODEL = "gpt-4o-mini"
 
 
 def available_models():

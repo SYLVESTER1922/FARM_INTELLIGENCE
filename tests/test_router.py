@@ -781,3 +781,37 @@ def test_the_outage_fallback_is_small_and_labelled():
     import router.pipeline as pl
     assert len(EXACT_PHRASES) == 13                                                 # the plan (section 22) documents this number
     assert "OUTAGE FALLBACK" in pathlib.Path(pl.__file__).read_text()
+
+
+# ----------------------------------------------------------------------------------------------- found by the generated-variants probe
+@pytest.mark.parametrize("metric,extra", [("expenses", dict(category_text="feed")), ("feed_consumed_cost", {}), ("feed_purchases", {})])
+def test_money_spent_on_feed_with_nothing_saying_bought_or_eaten_is_asked_about_whatever_the_model_chose(farm_db, metric, extra):
+    a, _ = ask(farm_db, "How much did we spend on feed in March 2026?", S(metric, period_phrase="March 2026", **extra))
+    assert (a.kind, a.code) == ("clarify", "disagree_metric") and "Feed consumed cost" in a.text and "Feed purchases" in a.text
+
+
+@pytest.mark.parametrize("q,metric", [("What was our feed cost in March 2026?", "feed_consumed_cost"),
+                                      ("How much did we spend feeding the pigs in March 2026?", "feed_consumed_cost"),
+                                      ("How much did we spend buying feed in March 2026?", "feed_purchases"),
+                                      ("How much feed did we use in March 2026?", "feed_consumed_cost")])
+def test_wording_that_says_what_happened_to_the_feed_is_not_asked_about(farm_db, q, metric):
+    a, _ = ask(farm_db, q, S(metric, period_phrase="March 2026"))
+    assert a.code != "disagree_metric"
+
+
+def test_the_feed_choice_is_remembered_for_the_conversation(farm_db):
+    session = {}
+    q = "How much did we spend on feed in March 2026?"
+    llm = FakeRouter(script={q: S("feed_consumed_cost", period_phrase="March 2026")})
+    assert answer_question_v2(q, farm_db, llm, today=TODAY, session=session).code == "disagree_metric"
+    assert answer_question_v2("2", farm_db, llm, today=TODAY, session=session).metric_id == "feed_purchases"
+    again = answer_question_v2(q, farm_db, llm, today=TODAY, session=session)
+    assert (again.kind, again.metric_id) == ("answer", "feed_purchases")
+
+
+def test_a_batch_code_the_farm_does_not_have_is_asked_about_with_the_closest_guess(farm_db):
+    a, _ = ask(farm_db, "What is the FCR for PGI-B04?", S("fcr"))
+    assert (a.kind, a.code) == ("clarify", "unknown_batch") and "Did you mean PIG-B04?" in a.text and "BRO-P01" in a.text
+    a, _ = ask(farm_db, "What's the average weight of batch PIGB-04?", S("weight"))
+    assert a.code == "unknown_batch" and "PIG-B04" in a.text
+    assert ask(farm_db, "What is the FCR for PIG-B04?", S("fcr"))[0].code != "unknown_batch"

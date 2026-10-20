@@ -488,3 +488,124 @@ Money and headcount: 0 wrong of 117 for both. **Gate A, "dev wrong rate at most 
 against: the prompt and the cross-checks were changed in response to dev cases, so 0% is not an estimate of the held-out rate.** The other
 Gate A items (every launch metric has a definition, template, parity test and eval cases; resolver and rendering tests pass; the model is
 chosen and pinned) were not re-audited in this round, and the pin is provisional with one of the three candidates untested.
+
+## 23. Decisions and checks, round two (2026-10-19)
+
+### 23.1 Provisional default model: gpt-4.1 (json_schema mode)
+
+`router.llm.PINNED_MODEL = "gpt-4.1"`; `gpt-4o-mini` stays selectable as the cheap option (`make_client("gpt-4o-mini")`, `--model`). Reasoning:
+in a probe of 30 calls, gpt-4o-mini in its default mode answered "none" for a plain "What's our total feed cost?" every time, and in the
+dev eval it refused that wording in about one repeat in three; the forced-tool-call mode fixed that wording but moved the failures to
+other borderline wording (section 22). gpt-4.1 routed it correctly in every call and mode, has fewer false refusals on the dev set (0 against
+3) and is under the 1-cent ceiling ($0.0066 against $0.0005 a question, about 13 times more). The pin is **provisional** until the
+comparison includes the Claude candidate (no Anthropic key yet) and the locked-set run. Re-run both before any change.
+
+### 23.2 Gate A audit (`python -m evals.gate_a_audit`, `tests/test_gate_a_audit.py`)
+
+| Gate A item | Result | Detail |
+|---|---|---|
+| Every launch metric has a definition | **Pass** | 21 of 21 |
+| ... a template | **Pass** | 21 of 21; the completeness test fails if a result field or row is not rendered |
+| ... a parity test | **Pass with exemptions, needs sign-off** | 12 of 21 have a dashboard figure and a parity test. 9 have no dashboard counterpart (feed purchases, profit, feed cost per animal, labour, batch count, sow count, feed stock, market readiness, weather); each records why, and every one of them is checked against the independent oracle on all its dev cases. The plan's item 8 cannot be met literally where no dashboard figure exists |
+| ... eval cases | **Fail against a proposed N** | The plan never set N. At a proposed 5 for the zero-tolerance metrics and 3 for the rest, 18 of 21 pass; below it: feed cost per animal 3 of 5, sow count 3 of 5, weather 2 of 3. Dev cases are Sylvester's to approve, so none were added |
+| Resolver and rendering unit tests at 100% | **Pass** | all pass (800+ tests), and line coverage of `resolver/` and `render/` is 100% (621 statements; it was 98%, and closing the gap found a real bug: the second month of "from March to May" was silently dropped) |
+| Dev wrong rate at most 2% | **Pass, tuned** | 0% for both candidates; tuned against, so not an estimate of the held-out rate |
+| Model chosen by bake-off and pinned | **Provisional** | gpt-4.1 pinned provisionally; Claude not compared |
+
+**Verdict: Gate A is not yet met.** Open: set N and add the missing dev cases (or accept the numbers), sign off the 9 parity exemptions, run the
+Claude comparison, then confirm the pin on the locked set.
+
+### 23.3 Quota alerts
+
+`router/alerts.py` writes every `insufficient_quota` error to the `llm_quota_log` table (migration 004: day, provider, model, error, the
+provider's own message, whether it triggered the day's email, why an email was not sent) and sends one email the first time one occurs each
+Africa/Harare day, so a stalled bot is noticed without flooding the inbox. If sending fails or email is not configured, the row says why
+and the next occurrence tries again. The email never contains a key. Settings come from the environment only: `ALERT_SMTP_HOST`,
+`ALERT_SMTP_PORT`, `ALERT_SMTP_USER`, `ALERT_SMTP_PASSWORD`, `ALERT_EMAIL_FROM`, `ALERT_EMAIL_TO` (the recipient is configuration, not code).
+**User actions, not code:** turn on billing alerts and auto-recharge on the OpenAI account, and set the `ALERT_*` variables where the app runs. The app
+should call `registry.migrations.migrate` once at startup so the table exists. This round the account ran out of credit once; the email
+would have named it.
+
+### 23.4 Untuned probe: generated variants of the dev questions
+
+`python -m evals.variants generate` makes three variants of each of the 176 dev questions: **typo** (code, seeded), **paraphrase** and
+**mixed** (English with Shona or Ndebele words, from a fixed glossary so the meaning cannot drift), 523 in all (a few rewrites were refused
+or unchanged and were dropped). They are in `evals/variants/dev_variants.json`, every one marked `generated: true`, and 104 (20%, stratified
+by kind) are in `evals/variants/spot_check.csv` for a person to confirm "same meaning" and "natural wording". **That spot-check has not been
+done**, and until it is, a "wrong" here may be a rewrite that changed the question. The variants of one source form a cluster (176 clusters).
+The generating model also routes, so this probe is somewhat optimistic.
+
+Untuned figures (prompt v4, 3 repeats, before any fix made because of the probe):
+
+| Run | Correct | Wrong | Refused | Clarified | Wrong, money + headcount |
+|---|---|---|---|---|---|
+| gpt-4.1, tuned dev set (176) | 96.6% | 0 | 0% | 3.4% | 0 of 117 |
+| gpt-4.1, variants (523) | 74.4% | 15 (2.9%) | 4.2% | 18.5% | 10 of 351 |
+| gpt-4o-mini, tuned dev set | 93.8% | 0 | 1.7% | 4.5% | 0 of 117 |
+| gpt-4o-mini, variants | 61.8% | 17 (3.3%) | 16.1% | 18.9% | 13 of 351 |
+
+By kind (wrong / refused / clarified): gpt-4.1 typo 1.7% / 4.0% / 16.5%, paraphrase 4.0% / 3.4% / 11.4%, mixed 2.9% / 5.2% / 27.9%;
+gpt-4o-mini typo 1.1% / 10.8% / 15.9%, paraphrase 6.3% / 9.1% / 10.9%, mixed 2.3% / 28.5% / 30.2%. In clusters: 15 of 176 sources had a wrong variant
+for gpt-4.1, 17 for gpt-4o-mini. So **the tuned 0% does not carry over: roughly 3% of unseen phrasings were answered wrongly**, and more than
+a tenth to a fifth were turned into a clarifying question.
+
+What the wrong answers were (gpt-4.1, 15): 8 were bugs in code that no model change would fix, now fixed (a "this date in the previous
+month" wording silently answered as the whole month, x4; a batch code with a typo answered with a misleading "needs two samples", x2; a
+comparison hidden by a typo, "comare to last montth"; and spend on feed read as one of two metrics without asking, x1); 3 were rewrites
+whose meaning drifted or became ambiguous ("income" for "net income", "pay for chicken feed" for "spent feeding the chickens"); 3 were
+the model misreading Shona or Ndebele; 1 is a known limit (a comparison phrased with a noun between the cue and the period, "pigs relative to
+the number we had on this day last month"). Defects found and fixed in code: the first line of a category question did not say which category
+(a wrong-scope hazard); the same-day wordings; period words with typos (`last montth`); the comparison cues (`relative to`, typos in
+`compare`); an unknown batch code is now a question with the closest guess; "spend/expense on feed" with nothing saying bought or eaten is
+asked about in code, not left to the model, and the answer is remembered for the conversation; Shona and Ndebele nouns for pigs, chickens
+and maize, including prefixed forms ("nehuku"), now name their section.
+
+After those fixes, gpt-4o-mini on the variants (no longer untuned, because the fixes were made from these failures): 70.2% correct, 6 wrong
+(1.1%), 14.5% refused, 14.1% clarified; typo 0 wrong, paraphrase 1 wrong, mixed 5 wrong. The tuned dev set did not regress (gpt-4o-mini 94.3%,
+gpt-4.1 97.2%, 0 wrong). gpt-4.1 was not re-run on the variants after the fixes (about $10 and 20 minutes).
+
+### 23.5 Language support: what happens when a question is not in English
+
+English is the supported language at launch. Everything downstream of the model is English: the period, "all time" and comparison words in
+the resolver, the number words, and every reply (templates, clarifying questions, refusals). The router prompt is English, but the model
+often understands some Shona or Ndebele, and the resolver's domain lexicon knows a few Shona and Ndebele nouns (pigs, chickens, maize;
+to be confirmed by a speaker). What happens, as measured on the mixed-language variants:
+
+- Usually the question is **not answered but turned into an English clarifying question** (28% for gpt-4.1, 30% for gpt-4o-mini): the
+  model reads a section the lexicon cannot see, or the reverse, and the cross-check asks rather than picking.
+- Sometimes it is **answered correctly** (64% for gpt-4.1, 39% for gpt-4o-mini), often because the numbers, months and batch codes
+  were English.
+- Occasionally it is **answered wrongly** (about 3%: 4 of 172 for gpt-4o-mini, 5 for gpt-4.1), because the model misreads a Shona or Ndebele verb or noun and nothing in the
+  English cross-checks can see it ("takatengesa" read as a readiness question).
+
+So the bot does not guess silently across languages, but it is not reliable in them, and **no claim should be made about Shona or Ndebele
+until real wording from the client has been tested** (the step 0.5 top-20 list is the place to see it) and a speaker has reviewed a
+glossary. Voice input adds transcription errors on top. The Gate C claim, when made, is about English questions only.
+
+## 24. Step 6: the capability catalog (started 2026-10-20)
+
+Done so far:
+
+- **`catalog/`** is the one place that says what the bot can and cannot answer. What it can answer is generated from the registry (each
+  metric's own `answers` / `does_not_answer`, grouped): `catalog/build.py` produces the reply to "help" and its variants, the reply to
+  "what can't you answer", and `catalog/CATALOG.md` (regenerate with `python -m catalog.build`; a test fails if the committed file is stale).
+  The hand-curated part is `catalog/untracked.py`.
+- **Three classes of "no"**, as section 4 required: *not recorded* (accounts payable, sick right now, forecast weather, equipment, company
+  details, payroll history), *recorded but no metric reads it yet* (staff and pay rates, crop scouting, crop field operations) and *not allowed*
+  (changing data). The second class is new: those three tables hold 76 rows that the bot used to hide behind a generic "I can only
+  answer questions about...". Their refusals say the data is recorded and what is shown instead; they never deny it.
+- **One source for refusals.** The refusal text, the wording that must back a "not tracked" claim, the router prompt's refusal vocabulary, the
+  closed refusal enum and the numbered "nearest metric or not tracked" question all read the curated list. Prompt v5 is the generated
+  vocabulary; no other rule changed.
+- **Schema coverage check.** A test fails if any table in the schema is neither read by a metric nor listed as unexposed with a class and a reason.
+  It currently lists five: `farm_profile` and `list_values` (internal), and `staff`, `scouting_log`, `field_operations` (recorded, no metric yet).
+  Whether chat may ever show staff pay rates is the farm's decision and is recorded as such.
+- **`explain_gap` and `DATA_DICTIONARY` are not used by the new path** (a test scans the new packages for them). They are deleted with the
+  old engine at the end of step 9, as `grounding.py` is.
+
+Measured after the change (dev set, 3 repeats, prompt v5): gpt-4.1 171 of 176 correct (97.2%), 0 wrong, 0 refused, 2.8% clarified;
+gpt-4o-mini 166 correct (94.3%), 0 wrong, 1.7% refused, 4.0% clarified. **False "we don't track that": 0 of 151 answerable dev questions for
+both models** (the old engine: 7 of 142; the first router run: 2 of 151). Refusal rate: every refusal the gpt-4.1 run gave was an expected one.
+
+Still to do in step 6: dev cases for the three new refusal classes (Sylvester approves cases), and the question of whether the "recorded, no
+metric yet" tables should get metrics before launch (the client's top 20 will say).

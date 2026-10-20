@@ -7,10 +7,11 @@ questions into the prompt would only inflate the dev score).
 Every change is a new PROMPT_VERSION with an entry in router/PROMPT_LOG.md. The held-out set is never used to tune.
 """
 
+from catalog.untracked import KNOWN
 from registry import REGISTRY
 from router.spec import ALLOWED_DIMENSIONS
 
-PROMPT_VERSION = "v4"
+PROMPT_VERSION = "v5"
 
 _RULES = """\
 You are the routing step of a farm-management assistant. You do NOT answer questions and you NEVER compute numbers or dates.
@@ -27,7 +28,7 @@ FIELDS
 - aggregation: "avg_per_week" only when the question asks for an average PER WEEK ("average weekly ...", "per week"). A plain "average" (an average weight, an average litter size) is part of what the metric reports: aggregation stays "total". Otherwise "total".
 - grain: "month" only when asked month by month ("by month", "monthly", "each month"). A period such as "this month" or "in March" is NOT a grain: use "none".
 - ambiguous_between: if the wording genuinely does not decide between two or three metrics, list their ids here (and still put your best guess in metric). Otherwise [].
-- refusal: when metric is "none", say why. accounts_payable = money the farm OWES others. current_sickness = whether animals are sick right now. forecast_weather = future weather. equipment = machinery, tractors, vehicles. company_info = ownership, legal, registration. write_action = a request to change or delete data. out_of_scope = anything else not about this farm's records. Otherwise "none".
+- refusal: when metric is "none", say why. {refusals} out_of_scope = anything else not about this farm's records. Otherwise "none".
 - follow_up: true if the question only makes sense as a continuation of a previous one ("and for poultry?", "what about last month?").
 
 DIRECTION AND MEANING (these decide most mistakes)
@@ -70,7 +71,8 @@ def _catalogue() -> str:
 
 
 def system_prompt() -> str:
-    return "\n\n".join([_RULES.strip(), _catalogue(), _EXAMPLES.strip()])
+    rules = _RULES.strip().replace("{refusals}", " ".join(f"{u.code} = {u.hint}." for u in KNOWN))      # the curated list, catalog/untracked.py
+    return "\n\n".join([rules, _catalogue(), _EXAMPLES.strip()])
 
 
 def user_prompt(question: str) -> str:

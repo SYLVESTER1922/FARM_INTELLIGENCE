@@ -85,6 +85,9 @@ def _month_label(y, m):
 
 
 # ---------------------------------------------------------------------------------------------- text preparation
+_UNIT_WORDS = ("month", "week", "year", "quarter", "day", "months", "weeks", "years", "days", "quarters")
+
+
 def normalise(text: str) -> str:
     """Lower-case, strip punctuation (keeping hyphens), fix month-name typos that sit next to a year."""
     t = re.sub(r"[^\w\s\-]", " ", text.lower())
@@ -97,7 +100,16 @@ def normalise(text: str) -> str:
         close = difflib.get_close_matches(word, list(FULL_MONTHS), n=1, cutoff=0.8)
         return f"{close[0]} {year}" if close else m.group(0)
 
-    return re.sub(r"\b([a-z]{4,9}) (\d{4})\b", fix, t)
+    t = re.sub(r"\b([a-z]{4,9}) (\d{4})\b", fix, t)
+
+    def fix_unit(m):                                            # "last montth", "this wek", "previous yeer"
+        word = m.group(2)
+        if word in _UNIT_WORDS:
+            return m.group(0)
+        close = difflib.get_close_matches(word, _UNIT_WORDS, n=1, cutoff=0.8)
+        return f"{m.group(1)} {close[0]}" if close else m.group(0)
+
+    return re.sub(r"\b(last|this|previous|next|past|current|same) ([a-z]{3,9})\b", fix_unit, t)
 
 
 def has_all_time_words(text: str) -> bool:
@@ -168,7 +180,8 @@ def extract_periods(text: str, today: dt.date, week_start: int = 0):
 
     # --- the same day a month or a year ago: ONE date, clamped to the last day of a shorter month
     #     (31 Mar - 1 month = 28/29 Feb; 29 Feb - 1 year = 28 Feb). Read before "last month" so it is never mistaken for it.
-    for m in list(re.finditer(r"\b(?:the )?same day (?:last|previous) (month|year)\b|\bthis day (?:last|previous) (month|year)\b|"
+    for m in list(re.finditer(r"\b(?:the )?same day (?:last|previous) (month|year)\b|\b(?:on )?this (?:day|date) (?:in |of |on )?(?:the )?(?:last|previous) (month|year)\b|"
+                              r"\b(?:the )?same date (?:in |of |on )?(?:the )?(?:last|previous) (month|year)\b|"
                               r"\btoday (?:last|previous) (month|year)\b|\b(?:a|one|1) (month|year) ago (?:today|to the day)\b", t)):
         unit = next(g for g in m.groups() if g)
         d = add_months(today, -1 if unit == "month" else -12)
@@ -221,7 +234,7 @@ def extract_periods(text: str, today: dt.date, week_start: int = 0):
     # --- bare months (no year): full names anywhere (except "may"); abbreviations and "may" only after a preposition
     for m in re.finditer(r"\b(january|february|march|april|june|july|august|september|october|november|december)\b", t):
         bare.append(BareMonth(FULL_MONTHS[m.group(1)], m.group(1)))
-    for m in re.finditer(rf"\b(?:in|during|for|of|since|from|last|this|early|late|mid) ({_M})\b(?! \d)", t):
+    for m in re.finditer(rf"\b(?:in|during|for|of|since|from|to|until|through|between|last|this|early|late|mid) ({_M})\b(?! \d)", t):
         if m.group(1) not in FULL_MONTHS or m.group(1) == "may":
             bare.append(BareMonth(ALL_MONTHS[m.group(1)], m.group(1)))
     return periods, bare
@@ -251,7 +264,8 @@ def _pretty(start, end):
 
 
 # ---------------------------------------------------------------------------------------------- comparisons
-_CUE = re.compile(r"\b(vs\.?|versus|compared (?:to|with)|compare[sd]? (?:to|with)|comparison (?:to|with)|against|"
+_CUE = re.compile(r"\b(vs\.?|versus|compared (?:to|with)|compare[sd]? (?:to|with)|comparison (?:to|with)|against|relative to|"
+                  r"in comparison (?:to|with)|as opposed to|"
                   r"(?:up|down) from|change (?:from|since)|difference (?:between|from|to)|how (?:does|did|do) .{0,40} compare(?: to| with)?)\b")
 # "more than last month", "higher than the same day last year": the period word is part of the cue itself
 _THAN_PERIOD = re.compile(r"\b(?:more|less|higher|lower|bigger|smaller|greater|fewer|better|worse|up|down|different) than "
@@ -261,11 +275,24 @@ _PERIOD_TAIL = re.compile(rf"\s*(?:the |a |an )?(?:last|previous|this|same|yeste
 _WEAK_COMPARE = re.compile(r"\b(compare|compared|comparison)\b")
 
 
+_COMPARE_WORDS = ("compare", "compared", "comparison", "comparing")
+
+
+def _fix_compare_typos(t):
+    def fix(m):
+        w = m.group(0)
+        if w in _COMPARE_WORDS or len(w) < 5:
+            return w
+        close = difflib.get_close_matches(w, _COMPARE_WORDS, n=1, cutoff=0.8)
+        return close[0] if close else w
+    return re.sub(r"[a-z]{5,11}", fix, t)
+
+
 def comparison_cue(text: str):
     """'period' when the text sets one PERIOD against another ("vs last month", "compared to today", "more than last
     year"); 'weak' for a bare "compare" (which may only compare domains: "compare piggery and poultry costs"); else
     None. resolve() refuses a 'period' comparison, and a 'weak' one only if two periods are named."""
-    t = normalise(text)
+    t = _fix_compare_typos(normalise(text))
     if _THAN_PERIOD.search(t):
         return "period"
     for m in _CUE.finditer(t):

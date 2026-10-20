@@ -9,3 +9,4 @@ Book2.xlsx
 evals/results/
 evals/client_questions/questions*.csv
 evals/client_questions/mapping-*
+.coverage
