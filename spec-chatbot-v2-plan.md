@@ -739,3 +739,11 @@ expenses 18 + 2 clarified both; revenue 8; profit 8; feed cost per animal 6 + 2 
 active headcount 12; batch count 8; mortality 10; sow count 8; FCR 4; weight 4; harvest yield 4; breeding 5; crop plantings 4; feed stock 4; market
 readiness 4; health events 4 + 2 clarified both; weather 4; refusals and clarify cases with no metric (45): 40 + 5 clarified (v5), 45 (v6).
 
+
+### 25.11 Domain over-ask fixed (2026-10-20)
+
+A domain word in the question ("pig", "bird", "chick", "broilers"...) now names the section even when the model returned no domain: the scope is
+built from the user's own words, so that is not a disagreement and the bot answers instead of asking "which part of the farm?". Asking remains
+for a model that names a *different* section from the words, and for a model that names a section the words never mention. Tests updated and added
+(the old tests built their disagreement from the model-silent case). Checked live on `ex12`, `ca01`, `dca01` (3 gpt-4.1 calls, about $0.02):
+all three now answer correctly with the section in the first line. Not re-run on the full dev set.

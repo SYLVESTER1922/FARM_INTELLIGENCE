@@ -9,7 +9,7 @@ import types
 
 import pytest
 
-from registry import REGISTRY
+from registry import REGISTRY, label
 from resolver import resolve
 from router import answer_question_v2
 from router import crosscheck
@@ -112,9 +112,21 @@ def test_agreement_is_silent():
     assert _check("What's our feed cost?", {}) == []
 
 
-def test_a_domain_the_lexicon_saw_but_the_model_missed_is_asked_about():
-    out = _check("feed cost for pigs", {})
-    assert [d.code for d in out] == ["domain"] and "Piggery" in out[0].message and "Reply" in out[0].message
+@pytest.mark.parametrize("question,metric", [
+    ("feed cost for pigs", "feed_consumed_cost"), ("What's the feed cost per pig?", "feed_cost_per_animal"),
+    ("feed cost per bird", "feed_cost_per_animal"), ("How much did we spend on day-old chicks?", "expenses"),
+    ("How many chickens died?", "mortality"), ("feed cost for the broilers", "feed_consumed_cost")])
+def test_a_domain_word_in_the_question_names_the_section_even_if_the_model_returned_none(question, metric):
+    """The user's own pig / bird / chick word names the section; the scope is built from that reading, so a model that returned no
+    domain is not a reason to ask 'which part of the farm?'."""
+    assert not [d for d in _check(question, {}, metric_id=metric) if d.code == "domain"]
+
+
+def test_a_model_that_names_no_domain_still_gets_the_one_the_user_named_in_the_scope(farm_db):
+    for q, domain in [("feed cost per pig", "piggery"), ("What's the feed cost per bird?", "poultry")]:
+        a, _ = ask(farm_db, q, S("feed_cost_per_animal"))
+        assert (a.kind, a.scope.domains) == ("answer", (domain,)), q
+        assert label(domain) in a.text.splitlines()[0]
 
 
 def test_a_domain_the_model_invented_is_asked_about():
@@ -206,7 +218,7 @@ def test_the_model_cannot_choose_the_period_the_resolver_computes_it(farm_db):
 
 
 def test_disagreement_is_a_question_not_a_pick(farm_db):
-    a, _ = ask(farm_db, "feed cost for pigs", S("feed_consumed_cost"))          # the model missed 'pigs'
+    a, _ = ask(farm_db, "feed cost for pigs", S("feed_consumed_cost", domains=["poultry"]))     # the model says poultry, the words say pigs
     assert (a.kind, a.code) == ("clarify", "disagree_domain") and "Reply" in a.text and "1)" in a.text
     a, _ = ask(farm_db, "feed cost last month", S("feed_consumed_cost"))        # the model missed 'last month'
     assert (a.kind, a.code) == ("clarify", "disagree_period")
@@ -397,7 +409,7 @@ def test_the_week_start_setting_reaches_the_resolver(farm_db):
 
 
 def test_every_clarification_and_refusal_carries_a_reason_code(farm_db):
-    cases = [("How many?", None), ("feed cost for pigs", S("feed_consumed_cost")), ("Who do we owe?", S("none", refusal="accounts_payable"))]
+    cases = [("How many?", None), ("feed cost for pigs", S("feed_consumed_cost", domains=["poultry"])), ("Who do we owe?", S("none", refusal="accounts_payable"))]
     for q, sp in cases:
         a = answer_question_v2(q, farm_db, FakeRouter(script={q: sp} if sp else {}), today=TODAY)
         assert a.kind in ("clarify", "refusal") and a.code and a.code not in ("ok",)
@@ -658,14 +670,14 @@ def test_a_new_question_instead_of_a_reply_drops_the_pending_question(farm_db):
 def test_a_domain_reply_is_applied_to_the_scope(farm_db):
     session = {}
     q = "feed cost for pigs"
-    llm = FakeRouter(script={q: S("feed_consumed_cost")})                                # the model missed 'pigs'
+    llm = FakeRouter(script={q: S("feed_consumed_cost", domains=["poultry"])})            # the model says poultry, the words say pigs
     a = answer_question_v2(q, farm_db, llm, today=TODAY, session=session)
-    assert a.code == "disagree_domain"
+    assert a.code == "disagree_domain" and "1) Piggery" in a.text and "2) Poultry" in a.text
     r = answer_question_v2("1", farm_db, llm, today=TODAY, session=session)
     assert r.kind == "answer" and r.scope.domains == ("piggery",) and "Piggery" in r.text.splitlines()[0]
     session = {}
     answer_question_v2(q, farm_db, llm, today=TODAY, session=session)
-    r = answer_question_v2("2", farm_db, llm, today=TODAY, session=session)              # 'All sections of the farm'
+    r = answer_question_v2("3", farm_db, llm, today=TODAY, session=session)              # 'All sections of the farm'
     assert r.kind == "answer" and r.scope.domains is None and "all domains" in r.text.splitlines()[0]
 
 
@@ -682,7 +694,7 @@ def test_a_reply_only_settles_its_own_disagreement(farm_db):
     """Two disagreements: the reply settles the first; the second is still asked, never skipped."""
     session = {}
     q = "feed cost for pigs"
-    llm = FakeRouter(script={q: S("feed_consumed_cost", aggregation="avg_per_week")})
+    llm = FakeRouter(script={q: S("feed_consumed_cost", aggregation="avg_per_week", domains=["poultry"])})
     a = answer_question_v2(q, farm_db, llm, today=TODAY, session=session)
     assert a.code == "disagree_domain" and a.notes == ["domain", "aggregation"]
     r = answer_question_v2("1", farm_db, llm, today=TODAY, session=session)

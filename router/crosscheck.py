@@ -150,7 +150,10 @@ def check(question, spec, metric, resolution, dashboard_filter=None) -> list:
     if not resolution.scope.batch_code:                      # a batch code names its domain; ignore the model's inference
         lexicon = resolution.scope.domains if resolution.domain_source == "named" else None
         model = _normalise_domains(spec.domains, metric)
-        if lexicon != model:
+        # The user's own domain word ("pig", "birds", "chicks") names the section, and the scope is built from that reading, so a model that
+        # returned no domain is not a disagreement. Asking is for a model that names a DIFFERENT section, or one that names a section
+        # the words never mention.
+        if lexicon != model and not (model is None and lexicon):
             readings = [d for d in (lexicon, model) if d]
             readings = list(dict.fromkeys(readings))
             opts = [_names(r) for r in readings] + ["All sections of the farm"]
