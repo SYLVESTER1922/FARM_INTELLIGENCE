@@ -148,13 +148,39 @@ def _gate_banner() -> str:
 def handle_message(question: str, date_from_str: str = "", date_to_str: str = "") -> str:
     try:
         dsn = os.environ["FARM_INTELLIGENCE_DB_DSN"]
+        date_from, date_to = _parse_date(date_from_str), _parse_date(date_to_str)
         answer = answer_question(
             question, farm_code=FARM_CODE, dsn=dsn,
-            date_from=_parse_date(date_from_str), date_to=_parse_date(date_to_str),
+            date_from=date_from, date_to=date_to,
         )
     except Exception:
         return GENERIC_ERROR_MESSAGE
+    _shadow(dsn, question, answer, date_from, date_to)
     return answer.text
+
+
+def _shadow(dsn, question, answer, date_from, date_to):
+    """Shadow mode (plan step 8): with SHADOW_MODE=1 the new engine also answers `question` in the background and logs it to shadow_log. The user
+    always gets the old answer, unchanged and undelayed; nothing here can raise."""
+    try:
+        from shadow import enabled, runner
+        if enabled():
+            runner.submit(dsn, FARM_CODE, question, answer, date_from=date_from, date_to=date_to)
+    except Exception:
+        pass
+
+
+def _report_button_on() -> bool:
+    return os.environ.get("SHADOW_MODE") == "1" or os.environ.get("REPORT_BUTTON") == "1"
+
+
+def _report_wrong(chat_history, note):
+    """The "report wrong answer" button: flags the latest answer in the chat for review. Never raises."""
+    try:
+        from shadow.reports import report_from_chat
+        return report_from_chat(os.environ["FARM_INTELLIGENCE_DB_DSN"], FARM_CODE, chat_history, note or "")
+    except Exception:
+        return "Thanks. The report could not be saved right now."
 
 
 def _chat_fn(message: str, history: list, date_from_str: str, date_to_str: str) -> str:
@@ -1076,6 +1102,9 @@ def build_interface() -> gr.Blocks:
                             gr.HTML('<div class="eyebrow">Tools</div>')
                             export_btn = gr.Button("📥 Export Chat", size="sm", variant="secondary")
                             export_file = gr.File(label="Download", visible=False)
+                            report_btn = gr.Button("🚩 Report wrong answer", size="sm", variant="secondary", visible=_report_button_on())
+                            report_note = gr.Textbox(placeholder="What was wrong? (optional)", show_label=False, visible=_report_button_on())
+                            report_status = gr.Markdown("", visible=_report_button_on())
 
                         # CENTER - chat, input row, follow-ups
                         with gr.Column(scale=3):
@@ -1139,6 +1168,8 @@ def build_interface() -> gr.Blocks:
                         [chat_state, search_history_state, search_order_state, chat_msg,
                          history_dropdown, fup1, fup2, fup3, chat_mic],
                     ).then(lambda h: h, [chat_state], [chatbot])
+
+                    report_btn.click(_report_wrong, [chat_state, report_note], [report_status])
 
                     for fup_btn in (fup1, fup2, fup3):
                         fup_btn.click(

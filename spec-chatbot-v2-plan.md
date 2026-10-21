@@ -423,7 +423,7 @@ outside the timed section); the first two gpt-4.1 attempts were discarded becaus
 |---|---|---|
 | 6 Capability catalog and refusals | Generate the catalog and the "what I can answer" help from the registry; keep the small hand-written "known untracked" list; retire `explain_gap` and `DATA_DICTIONARY` once the new path replaces them. | False "we don't track that" rate; refusal rate. |
 | 7 Sync gates (built, section 26) | Staging copy and swap-on-pass, block and warn gates, last-good snapshot with banner and staleness, email on a block, acknowledgement and firing logs, dirty-data fixtures. | Gate false-positive rate; wrong rate on the dirty fixtures. |
-| 8 Shadow mode | The new engine runs beside the old one behind a flag, logging to a separate table; disagreement report; "report wrong answer" button; `query_log` sampling. | Questions the written set missed. |
+| 8 Shadow mode (built, section 27) | The new engine runs beside the old one behind a flag, logging to a separate table; disagreement report; "report wrong answer" button; `query_log` sampling. | Questions the written set missed. |
 | 9 Per-group cutover | Headcount, then money, then the rest; each only when eval and shadow results pass; manual Render deploys, verified live. `grounding.py` and the old engine stay until the end of this step. | Live wrong rate per group. |
 | 10 Gate B pilot | The client uses it: held-out run (zero wrong in at least 200 independent money and headcount questions), sync gates and the data-quality report live. | Pilot traffic evidence. |
 | 11 Gate C claim | At most X wrong in N untuned questions at 95% confidence, clusters counted once, pinned model named. The old engine is deleted after the claim and one clean pilot month. | The 0.5% statement. |
@@ -813,3 +813,40 @@ with `SET LOCAL search_path` is written for Supabase's transaction pooler but no
 dates in the wrong format); (d) the gate false-positive rate is measured on one clean workbook, so it is an upper-bound check, not a rate.
 **User actions:** call `registry.migrations.migrate` once at app start (creates the four tables); set the `ALERT_*` variables where the app runs; set `GATED_SYNC=1`
 only at the cutover (step 9). Nothing was pushed or deployed.
+
+## 27. Step 8: shadow mode (built 2026-10-20, not switched on anywhere)
+
+**What exists** (package `shadow/`; migration `006_shadow_mode`; the old engine and `grounding.py` untouched; no paid call, no live connection, no push, no deploy):
+
+- **Running beside the old engine (`shadow/runner.py`).** With `SHADOW_MODE=1`, `handle_message` still returns the old engine's answer unchanged and undelayed; it then
+  hands the question, the old `Answer` and the dashboard date range to a background pool (2 threads). The new engine answers on its own connection and the result goes to
+  `shadow_log` only: the new answer's text, kind, reason code, metric, scope, model, prompt version, latency, cost, and the old engine's kind, source and reason. It never
+  raises, and a missing table, an exhausted ceiling or a crash in the new engine is logged or skipped, never shown. Verified by test that shadow writes to no table but its own.
+- **Bounded cost.** `SHADOW_SAMPLE` (default 1.0) shadows a fraction of questions; `SHADOW_DAILY_LIMIT` (default 200) is a hard daily ceiling, so the most it can spend is
+  200 x about $0.0066 = about $1.30 a day with gpt-4.1. `SHADOW_MODEL` defaults to the pinned model.
+- **Comparing (`shadow/compare.py`).** The old engine returns prose, so figures are compared by the numbers in the text (dates, years, batch codes and the data-through line
+  removed). Classes: `agree` (one set of figures inside the other), `disagree`, `new_asks` and `new_refuses` (old answered, new did not), `old_misses` (old declined or
+  asked, new answered), `both_decline`, `unclear` (no figures to compare) and `new_error`. Everything except `agree` and `both_decline` waits for a human label.
+- **Disagreement report and labels (`shadow/report.py`).** `text_report` and `export_label_sheet` (a CSV with blank label and note columns); labels `old_right`, `new_right`,
+  `both_right`, `both_wrong`, `unclear`, each with a reviewer. `new_wrong` (labelled old_right or both_wrong) is the live-wrong evidence step 9 needs, also per metric.
+- **"Report wrong answer" button (`shadow/reports.py`, `ui/app.py`).** Sits in the chat tools; saves the last question and answer, an optional note, the engine, and a link to the
+  shadow row, to `wrong_answer_reports`. Hidden unless `SHADOW_MODE=1` or `REPORT_BUTTON=1` (the pilot switch). `export_for_review` writes the reports as a CSV of draft cases;
+  nothing adds an eval case without Sylvester.
+- **`query_log` sampling (`shadow/sample.py`).** A seeded, reviewable sample of what people asked the old engine, with questions the written set and the variants already cover
+  removed (compared after normalising case and punctuation); every question the old engine failed on, was scoped out of or asked about comes first, then a random draw of answered
+  ones; CSV with blank columns for "what should it say" and "add to dev set".
+
+**Tests:** 32 in `tests/test_shadow.py` (classification matrix, each outcome class, a crashing new engine, writes only to `shadow_log`, sampling and the daily ceiling, off by
+default, background submit, the user always getting the old answer even when shadow fails, button visibility, labelling, the report, sampling).
+
+**Design choices to confirm:**
+
+1. **No conversation state in shadow.** The old engine has no multi-turn memory, so shadow calls the new engine with no session: a reply like "1" to a clarifying question is logged as a
+   follow-up without context, not compared. Real conversational behaviour is tested by the eval, not by shadow.
+2. **Number matching is a rough comparator.** It will call two different-looking but consistent answers `unclear` and send them to a person; it can call two answers with a shared
+   figure `agree`. That is acceptable for finding missed cases, not for the claim.
+3. **The shadow run costs model calls on real traffic.** At 20 to 100 questions a week it is cents a week; the ceiling is for safety.
+
+**Not done, and what stands between this and live (all need Sylvester's go-ahead; none was touched):** run `registry.migrations.migrate` on the Supabase database (creates
+`shadow_log` and `wrong_answer_reports`); make `OPENAI_API_KEY` available to the app process; set `SHADOW_MODE=1` (and `REPORT_BUTTON=1` for the pilot); a manual Render deploy,
+verified live. Not tested here: the background pool inside the real Gradio process, and the Supabase transaction pooler with a second connection per shadow run.

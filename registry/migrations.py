@@ -112,6 +112,51 @@ MIGRATIONS = [
                held_since TIMESTAMPTZ
            )""",
     ]),
+    ("006_shadow_mode", [
+        # The new engine's answer to the same question the old engine answered (shadow/runner.py), and what a person decided about any disagreement.
+        """CREATE TABLE IF NOT EXISTS shadow_log (
+               id SERIAL PRIMARY KEY,
+               logged_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+               farm_code TEXT NOT NULL,
+               question TEXT NOT NULL,
+               filter_from DATE,
+               filter_to DATE,
+               old_kind TEXT NOT NULL,
+               old_intent_source TEXT,
+               old_reason TEXT,
+               old_text TEXT,
+               new_kind TEXT NOT NULL,
+               new_code TEXT,
+               new_metric TEXT,
+               new_scope JSONB,
+               new_text TEXT,
+               new_error TEXT,
+               model TEXT,
+               prompt_version TEXT,
+               llm_seconds DOUBLE PRECISION,
+               total_seconds DOUBLE PRECISION,
+               cost_usd DOUBLE PRECISION,
+               classification TEXT NOT NULL,
+               needs_label BOOLEAN NOT NULL DEFAULT false,
+               label TEXT,
+               label_note TEXT,
+               labelled_by TEXT,
+               labelled_at TIMESTAMPTZ
+           )""",
+        "CREATE INDEX IF NOT EXISTS shadow_log_class ON shadow_log (farm_code, classification, needs_label)",
+        # The "report wrong answer" button (any engine). `status`: new | triaged | added_to_eval | dismissed.
+        """CREATE TABLE IF NOT EXISTS wrong_answer_reports (
+               id SERIAL PRIMARY KEY,
+               reported_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+               farm_code TEXT NOT NULL,
+               engine TEXT NOT NULL,
+               question TEXT NOT NULL,
+               answer_shown TEXT NOT NULL,
+               note TEXT,
+               shadow_id INTEGER REFERENCES shadow_log(id),
+               status TEXT NOT NULL DEFAULT 'new'
+           )""",
+    ]),
 ]
 
 
