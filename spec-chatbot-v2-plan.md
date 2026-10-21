@@ -892,3 +892,6 @@ two batches, and a property test that every batch-filtering metric returns only 
 Changed: `he02` clarified to correct (a flip between runs, unrelated); `mo09`, `fcr3`, `dfr01`, `wt01`, `wt04` kept their outcome and now lead with the named batch's figure. Follow-ups for
 Sylvester: (1) the scorer could require that `mo09` contain no "Highest:" (it passed the broken answer; a dev-case change, so not made); (2) real per-batch support for headcount, feed cost and
 market readiness would turn the new refusals into answers; the data supports it.
+
+Scorer tightened (Sylvester approved, 2026-10-21): `mo09` now fails if the answer contains "Highest:" (the lead of a ranking of every batch). Re-scored offline from the saved runs, no model call: the dev run before the
+named-entity fix goes from 219 correct-or-clarified to 1 wrong (`mo09`, wrong scope) with the other 218 unchanged; the run after the fix is unchanged (216 correct, 3 clarified, 0 wrong).

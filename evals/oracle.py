@@ -140,7 +140,9 @@ class Oracle:
 
     def batch_deaths(self, batch_code):
         t = "pig_daily_log" if batch_code.startswith("PIG") else "poultry_daily_log"
-        return Expect(required=[self.one(f"SELECT COALESCE(SUM(deaths),0) FROM {t} WHERE batch_code=%s", (batch_code,))])
+        # A named batch is answered with its own figure; "Highest:" is the lead of a ranking of every batch (the shadow_log defect, plan 27.3).
+        return Expect(required=[self.one(f"SELECT COALESCE(SUM(deaths),0) FROM {t} WHERE batch_code=%s", (batch_code,))],
+                      forbidden_words=["Highest:"])
 
     def worst_poultry_mortality_batch(self):
         row = self.rows(

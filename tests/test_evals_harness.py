@@ -164,3 +164,12 @@ def test_a_clarification_is_correct_only_for_cases_that_accept_it():
     assert apply_case_rules(Case(**base, accept_clarify=True), "clarified", "")[0] == "correct"
     assert apply_case_rules(Case(**base), "clarified", "")[0] == "clarified"
     assert apply_case_rules(Case(**base, accept_clarify=True), "wrong", "x")[0] == "wrong"
+
+
+def test_a_ranking_of_all_batches_fails_a_named_batch_death_question():
+    from evals.oracle import Expect
+    exp = Expect(required=[42], forbidden_words=["Highest:"])
+    ranking = "Mortality by batch, batch BRO-P02\nHighest: PIG-B02 at 15.38%\n- BRO-P02 (Poultry): 8.08% (42 deaths of 520 placed)"
+    own = "Mortality, batch BRO-P02\nBRO-P02: 8.08% (42 deaths of 520 placed)"
+    assert score("answer", exp, Observed("answer", ranking))[0] == "wrong"
+    assert score("answer", exp, Observed("answer", own))[0] == "correct"
