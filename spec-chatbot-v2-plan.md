@@ -747,3 +747,8 @@ built from the user's own words, so that is not a disagreement and the bot answe
 for a model that names a *different* section from the words, and for a model that names a section the words never mention. Tests updated and added
 (the old tests built their disagreement from the model-silent case). Checked live on `ex12`, `ca01`, `dca01` (3 gpt-4.1 calls, about $0.02):
 all three now answer correctly with the section in the first line. Not re-run on the full dev set.
+
+Full dev run after the fix (gpt-4.1, prompt v6, 219 cases, 1 repeat, about $1.45): 215 correct (98.2%), 0 wrong, 0 refused, 4 clarified (1.8%), 0 wrong of
+135 money and headcount. Against the run before the fix: `ex12`, `ca01`, `dca01` went from a question to a correct answer; `rc07` went the other way
+(answer to question) and `mo09` changed wording. Neither is caused by the fix: `rc07` has flipped between runs (v5 asked, the first v6 run answered,
+this run asked) and `mo09` is the model choosing whether to add a per-batch breakdown. All nine cases that should clarify still do.
