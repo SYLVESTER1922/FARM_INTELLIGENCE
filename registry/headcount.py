@@ -110,12 +110,32 @@ def mortality(conn, scope):
         return no_record("mortality", scope, "%", msg, cov)
     lo, hi = bounds(scope)
 
+    if scope.batch_code and scope.grain != "month":     # a NAMED batch leads: its own figure, never a ranking of all batches (whatever dimension was added)
+        for d in LIVESTOCK:
+            meta = LOGS[d]
+            row = conn.execute(f"SELECT {meta['placed']} FROM {meta['batches']} WHERE batch_code = %s",
+                               (scope.batch_code,)).fetchone()
+            if row:
+                deaths = int(one(conn, f"SELECT COALESCE(SUM(deaths), 0) FROM {meta['log']} "
+                                       f"WHERE batch_code = %(b)s AND date BETWEEN %(lo)s AND %(hi)s",
+                                 {"b": scope.batch_code, "lo": lo, "hi": hi}))
+                placed = int(row[0])
+                rate = rnd(Decimal(deaths) / Decimal(placed) * 100, 2) if placed else None
+                return Result("mortality", "ok", scope, "%",
+                              {"deaths": deaths, "at_risk": placed, "rate_pct": rate},
+                              [{"domain": d, "label": label(d), "batch_code": scope.batch_code, "deaths": deaths,
+                                "at_risk": placed, "rate_pct": rate}], cov,
+                              [f"Mortality = deaths ÷ animals placed ({placed:,})."])
+        return Result("mortality", "not_available", scope, "%", coverage=cov,
+                      message=f"There is no batch {scope.batch_code} on record.")
+
     if scope.grain == "month":
         rows = []
         for d in domains:
             for r in rows_of(conn, f"""SELECT date_trunc('month', date)::date AS month, SUM(deaths) AS deaths
-                FROM {LOGS[d]['log']} WHERE date BETWEEN %(lo)s AND %(hi)s GROUP BY 1 ORDER BY 1""",
-                             {"lo": lo, "hi": hi}):
+                FROM {LOGS[d]['log']} WHERE date BETWEEN %(lo)s AND %(hi)s
+                AND (%(b)s::text IS NULL OR batch_code = %(b)s) GROUP BY 1 ORDER BY 1""",
+                             {"lo": lo, "hi": hi, "b": scope.batch_code}):
                 rows.append({"domain": d, "label": label(d), "month": month_label(r["month"]),
                              "month_start": r["month"], "deaths": int(r["deaths"] or 0)})
         return Result("mortality", "ok", scope, "%", {"deaths": sum(r["deaths"] for r in rows)}, rows, cov,
@@ -140,25 +160,6 @@ def mortality(conn, scope):
                       {"worst_batch": worst["batch_code"] if worst else None,
                        "worst_rate_pct": worst["rate_pct"] if worst else None}, rows, cov,
                       ["Batch mortality = deaths ÷ animals placed."])
-
-    if scope.batch_code:
-        for d in LIVESTOCK:
-            meta = LOGS[d]
-            row = conn.execute(f"SELECT {meta['placed']} FROM {meta['batches']} WHERE batch_code = %s",
-                               (scope.batch_code,)).fetchone()
-            if row:
-                deaths = int(one(conn, f"SELECT COALESCE(SUM(deaths), 0) FROM {meta['log']} "
-                                       f"WHERE batch_code = %(b)s AND date BETWEEN %(lo)s AND %(hi)s",
-                                 {"b": scope.batch_code, "lo": lo, "hi": hi}))
-                placed = int(row[0])
-                rate = rnd(Decimal(deaths) / Decimal(placed) * 100, 2) if placed else None
-                return Result("mortality", "ok", scope, "%",
-                              {"deaths": deaths, "at_risk": placed, "rate_pct": rate},
-                              [{"domain": d, "label": label(d), "batch_code": scope.batch_code, "deaths": deaths,
-                                "at_risk": placed, "rate_pct": rate}], cov,
-                              [f"Mortality = deaths ÷ animals placed ({placed:,})."])
-        return Result("mortality", "not_available", scope, "%", coverage=cov,
-                      message=f"There is no batch {scope.batch_code} on record.")
 
     rows = []
     for d in domains:
@@ -192,7 +193,7 @@ register(Metric(
     period="range", domains=LIVESTOCK, zero_tolerance=True,
     answers="How many animals died and the mortality rate, farm-wide, per domain, per batch or per month.",
     does_not_answer="Cause of death.",
-    compute=mortality, dimensions=("batch",), grains=("month",), eval_oracles=("deaths", "batch_deaths", "worst_poultry_mortality_batch", "mortality_rate"),
+    compute=mortality, dimensions=("batch",), grains=("month",), batch_filter=True, eval_oracles=("deaths", "batch_deaths", "worst_poultry_mortality_batch", "mortality_rate"),
     dashboard=("fetch_dashboard_stats", "fetch_mortality_by_month", "fetch_findings"),
 ))
 

@@ -869,3 +869,26 @@ shadow thread is the first place the production process imports `router`, `resol
 hook swallowed every exception with no log, and `run_shadow` logged only the exception's type name. Now: failures log type, message and traceback (never the question or the DSN) under the
 `shadow` logger; the app configures logging at start-up (`%(asctime)s %(levelname)s %(name)s`) and says whether shadow mode is ON, or warns when `SHADOW_MODE` is set to anything other than
 exactly `1`; skips (sampling, daily ceiling) and each logged row are INFO lines; `tzdata` is in `requirements.txt`. Tests cover each. Needs a push and a manual Render deploy to take effect.
+
+### 27.3 Named-entity answers (2026-10-21)
+
+Found in `shadow_log`: "How many deaths were there in batch BRO-P02?" was answered with a ranking of all eight batches led by "Highest: PIG-B02 at 15.38%", under a first line that said
+"batch BRO-P02". **Cause (code read):** the model added `dimension = batch`; in `registry/headcount.py` the dimension branch (and the monthly branch) ran before the named-batch branch and
+ignored `scope.batch_code`, so the filter was printed on the first line and not applied. The dev scorer passed it, because the right figure (42 deaths) was in the list.
+
+**The same pattern elsewhere (list):** (1) `mortality`: dimension and month views ignored the named batch (fixed); (2) `fcr`: a named batch led with "Best: X; worst: X" (a ranking of one); (3) `weight`: a
+named batch led with a generic header line; (4) the larger one: only `mortality`, `fcr` and `weight` read `scope.batch_code`. Every other metric (feed cost, cost per animal, headcount, health events,
+market readiness, expenses, revenue ...) ignored a batch code in the question while the first line still said "batch X": a farm-wide figure labelled as one batch's. `harvest_yield` and `breeding` also
+open with a best-and-worst line, but have no entity filter at all (a plot or sow name is not part of the scope), so they are not misleading; they are listed for later.
+
+**Fix.** (a) `Metric.batch_filter` says which metrics can answer for one batch (`mortality`, `fcr`, `weight`). (b) The resolver refuses a batch code on any other metric with a named message
+(`batch_filter_unsupported`: "I can't show <metric> for a single batch yet. I can show it for the whole farm or one section: ask again without the batch code."), so a batch label is never printed
+over a figure that is not about that batch; and more than one batch code is a question (`multiple_batches`), not a silent pick of the first. (c) `mortality` answers a named batch first whatever
+dimension or grain was added, and its monthly view honours the batch. (d) `fcr` returns `{batch, fcr}` for a named batch (no best and worst); `weight` leads with the batch row. Without a named batch
+the rankings are unchanged ("Which batch has the worst mortality?", "worst FCR"). 32 tests in `tests/test_named_entity.py` (mortality, fcr, weight, the refusal for every metric without batch support,
+two batches, and a property test that every batch-filtering metric returns only the named batch in every dimension and grain); the mortality ones fail on the old code.
+
+**Dev run after the fix** (gpt-4.1, prompt v6, 219 cases, 1 repeat, about $1.45): 216 correct (98.6%), 0 wrong, 0 refused, 3 clarified (1.4%); 0 wrong of 135 money and headcount. Nothing got worse.
+Changed: `he02` clarified to correct (a flip between runs, unrelated); `mo09`, `fcr3`, `dfr01`, `wt01`, `wt04` kept their outcome and now lead with the named batch's figure. Follow-ups for
+Sylvester: (1) the scorer could require that `mo09` contain no "Highest:" (it passed the broken answer; a dev-case change, so not made); (2) real per-batch support for headcount, feed cost and
+market readiness would turn the new refusals into answers; the data supports it.

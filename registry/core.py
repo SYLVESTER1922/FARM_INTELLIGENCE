@@ -121,6 +121,7 @@ class Metric:
     parity_exempt: str = ""          # why a metric has no dashboard counterpart
     uses_filter: bool = True         # False: a balance or snapshot that ignores the dashboard date filter
     snapshot_default: bool = False   # True: with no period named it answers "latest" (weather), else a range
+    batch_filter: bool = False       # True: the metric can answer for ONE named batch (scope.batch_code); False: a batch code in the question is refused, never ignored
 
 
 REGISTRY = {}

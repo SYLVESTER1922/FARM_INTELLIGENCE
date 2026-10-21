@@ -70,6 +70,9 @@ def fcr(conn, scope):
              "weight gained = change in average weight × animals at the latest sample."]
     if skipped:
         notes.append("No FCR for " + ", ".join(r["batch_code"] for r in skipped) + ": not enough weight data.")
+    if scope.batch_code:                       # a NAMED batch: its own figure, no best-and-worst ranking of one
+        return Result("fcr", "ok", scope, "ratio", {"batch": ranked[0]["batch_code"], "fcr": ranked[0]["fcr"]},
+                      ranked + skipped, cov, notes)
     return Result("fcr", "ok", scope, "ratio",
                   {"best_batch": ranked[0]["batch_code"], "best_fcr": ranked[0]["fcr"],
                    "worst_batch": ranked[-1]["batch_code"], "worst_fcr": ranked[-1]["fcr"]},
@@ -84,7 +87,7 @@ register(Metric(
     unit="ratio", decimals=2, period="range", domains=LIVESTOCK, zero_tolerance=False,
     answers="Which batches convert feed best and worst, and a batch's FCR.",
     does_not_answer="FCR for a batch with fewer than two weight samples.",
-    compute=fcr, eval_oracles=("fcr_batch", "fcr_best_worst"), dashboard=("fetch_fcr_by_batch",),
+    compute=fcr, eval_oracles=("fcr_batch", "fcr_best_worst"), dashboard=("fetch_fcr_by_batch",), batch_filter=True,
 ))
 
 
@@ -120,7 +123,7 @@ register(Metric(
     zero_tolerance=False,
     answers="How heavy a batch or a domain's batches are now.",
     does_not_answer="Individual animal weights.",
-    compute=weight, eval_oracles=("batch_weight",),
+    compute=weight, eval_oracles=("batch_weight",), batch_filter=True,
     dashboard=("fetch_batch_summary",),
 ))
 

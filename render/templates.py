@@ -159,8 +159,11 @@ def mortality(r, fig, rows, c):
 
 # ============================================================================ performance
 def fcr(r, fig, rows, c):
-    lines = [f"Best: {fig['best_batch']} at {num(fig['best_fcr'], 2)}; worst: {fig['worst_batch']} at "
-             f"{num(fig['worst_fcr'], 2)} (lower is better)"]
+    if "best_batch" in r.figures:
+        lines = [f"Best: {fig['best_batch']} at {num(fig['best_fcr'], 2)}; worst: {fig['worst_batch']} at "
+                 f"{num(fig['worst_fcr'], 2)} (lower is better)"]
+    else:                                                        # a named batch leads with its own figure
+        lines = [f"{fig['batch']}: FCR {num(fig['fcr'], 2)} (lower is better)"]
     for row in rows:
         reason = row["reason"]
         if row["fcr"] is None:
@@ -174,11 +177,14 @@ def fcr(r, fig, rows, c):
 
 
 def weight(r, fig, rows, c):
-    lines = [f"Latest sample on or before {date(fig['as_of'])}:"]
+    named = bool(r.scope.batch_code)
+    lines = [f"Latest sample on or before {date(fig['as_of'])}:"] if not named else []
     for row in rows:
         state = "" if row["active"] else " (batch no longer on the farm)"
         lines.append(f"- {row['batch_code']} ({row['label']}): {num(row['avg_weight'], 1)} {row['unit']}, "
                      f"sampled {date(row['date'])}{state}")
+    if named:                                                    # the batch's own figure first, then the date it is as of
+        lines.append(f"Latest sample on or before {date(fig['as_of'])}.")
     return "", lines
 
 

@@ -277,7 +277,7 @@ def _continue(q, conn, llm_res, spec, farm_code, today, dashboard_filter, week_s
     res = resolve(q, metric, today=today, dashboard_filter=dashboard_filter, modules=modules, week_start=week_start)
     if not res.ok:
         u = res.unresolved
-        if u.code in ("month_without_year", "multiple_periods"):
+        if u.code in ("month_without_year", "multiple_periods", "multiple_batches"):
             return _clarify(u.code, u.message, metric_id=spec.metric, spec=spec, llm=llm_res)
         return _refuse(u.code, u.message, metric_id=spec.metric, spec=spec, llm=llm_res)
 

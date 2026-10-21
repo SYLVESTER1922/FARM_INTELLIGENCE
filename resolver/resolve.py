@@ -18,7 +18,7 @@ import re
 from dataclasses import dataclass, field
 
 from registry.core import DOMAIN_LABELS, Metric, Scope
-from resolver.lexicon import domain_words_in, find_batch_code
+from resolver.lexicon import BATCH_CODE_RE, domain_words_in, find_batch_code
 from resolver.periods import (
     Period, comparison_cue, extract_periods, fmt_range, has_all_time_words, normalise, unsupported_period_phrase,
 )
@@ -27,7 +27,7 @@ from resolver.periods import (
 @dataclass
 class Unresolved:
     code: str          # unsupported_period | multiple_periods | month_without_year | period_not_supported |
-                       # domain_unsupported | module_off | unsupported_aggregation
+                       # domain_unsupported | module_off | unsupported_aggregation | multiple_batches | batch_filter_unsupported
     message: str       # what to tell the user; they can act on it
     detail: dict = field(default_factory=dict)
 
@@ -170,7 +170,16 @@ def resolve(question: str, metric: Metric, *, today: dt.date, dashboard_filter=N
     if bad_agg:
         return Resolution(metric.id, Scope(), "all_time", domain_source=domain_source, domain_words=words, unresolved=bad_agg)
 
-    batch = find_batch_code(question)
+    codes = list(dict.fromkeys(m.group(0).upper() for m in BATCH_CODE_RE.finditer(question)))
+    if len(codes) > 1:
+        return _fail(metric, "multiple_batches",
+                     f"That names more than one batch ({', '.join(codes)}). I can answer for one batch at a time: which one do you want first?",
+                     batches=codes)
+    batch = codes[0] if codes else None
+    if batch and not metric.batch_filter:                      # never print "batch X" over a figure that is not about batch X
+        return _fail(metric, "batch_filter_unsupported",
+                     f"I can't show {metric.title} for a single batch yet. I can show it for the whole farm or one section: ask again without the batch code.",
+                     batch=batch)
     base = dict(domains=domains, aggregation=agg or "total", grain=grain, batch_code=batch)
     common = dict(metric_id=metric.id, domain_source=domain_source, domain_words=words)
 
