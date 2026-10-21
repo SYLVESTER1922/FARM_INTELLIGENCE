@@ -2,7 +2,7 @@
 
 import datetime as dt
 
-from gates import STALE_DAYS, WARN
+from gates import STALE_AFTER_FAILED_LOADS, STALE_DAYS, WARN
 from render import format as fmt
 
 
@@ -10,17 +10,33 @@ def _ready(conn):
     return conn.execute("SELECT to_regclass('data_snapshot') IS NOT NULL AND to_regclass('gate_firings') IS NOT NULL").fetchone()[0]
 
 
+def _failed_load_streak(conn, farm_code):
+    """How many of the most recent uploads in a row could not be loaded at all (outcome 'error')."""
+    outcomes = [r[0] for r in conn.execute("SELECT outcome FROM sync_runs WHERE farm_code = %s ORDER BY id DESC LIMIT 20", (farm_code,)).fetchall()]
+    n = 0
+    for o in outcomes:
+        if o != "error":
+            break
+        n += 1
+    return n
+
+
 def banner(conn, farm_code, now=None):
-    """None when nothing is held back. When a newer upload is held back: "Data last verified <date>. A newer upload is being reviewed.";
-    more prominent once the verified snapshot is older than STALE_DAYS."""
+    """None when nothing is held back and loads are succeeding. When a newer upload is held back: "Data last verified <date>. A newer upload is
+    being reviewed."; the more prominent stale form once the verified snapshot is older than STALE_DAYS. Also the stale form after
+    STALE_AFTER_FAILED_LOADS consecutive uploads that could not be loaded (the app keeps serving the last verified data)."""
     if not _ready(conn):
         return None
     row = conn.execute("SELECT verified_at, held_back FROM data_snapshot WHERE farm_code = %s", (farm_code,)).fetchone()
-    if row is None or not row[1]:
+    failed = _failed_load_streak(conn, farm_code) if conn.execute("SELECT to_regclass('sync_runs')").fetchone()[0] else 0
+    failing = failed >= STALE_AFTER_FAILED_LOADS
+    if row is None or not (row[1] or failing):
         return None
     verified, now = row[0], now or dt.datetime.now(dt.timezone.utc)
     when = fmt.date(verified.date().isoformat())
     age = (now - verified).days
+    if failing:
+        return (f"⚠️ Data last verified {when} ({age} days ago). The last {failed} uploads could not be loaded, so these figures may be out of date.")
     if age > STALE_DAYS:
         return f"⚠️ Data last verified {when} ({age} days ago). A newer upload is still being reviewed, so these figures may be out of date."
     return f"Data last verified {when}. A newer upload is being reviewed."

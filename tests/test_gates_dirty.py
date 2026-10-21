@@ -179,3 +179,40 @@ def test_an_unsent_email_is_recorded_not_raised(gate_db):
 
 def test_the_migration_is_idempotent(gate_db):
     assert migrate(gate_db) == []
+
+
+def _broken():
+    import openpyxl
+    wb = openpyxl.load_workbook(WORKBOOK, data_only=True)
+    wb["02_EXPENSES"].cell(2, 4).value = "item2"
+    return wb
+
+
+def test_two_consecutive_failed_loads_show_the_stale_banner_and_a_good_load_clears_it(gate_db):
+    quiet = dict(notifier=lambda s, b: None)
+    gated_sync_workbook_object(_broken(), FARM, TEST_DSN, now=T0 + dt.timedelta(days=1), **quiet)
+    assert status.banner(gate_db, FARM, now=T0 + dt.timedelta(days=2)) is None                      # one failure: no banner (it emails)
+    gated_sync_workbook_object(_broken(), FARM, TEST_DSN, now=T0 + dt.timedelta(days=2), **quiet)
+    text = status.banner(gate_db, FARM, now=T0 + dt.timedelta(days=3))
+    assert text == "⚠️ Data last verified 1 Oct 2026 (3 days ago). The last 2 uploads could not be loaded, so these figures may be out of date."
+    gated_sync_workbook_object(_broken(), FARM, TEST_DSN, now=T0 + dt.timedelta(days=3), **quiet)
+    assert "The last 3 uploads" in status.banner(gate_db, FARM, now=T0 + dt.timedelta(days=3))
+    gated_sync_workbook(str(WORKBOOK), FARM, TEST_DSN, now=T0 + dt.timedelta(days=4), **quiet)
+    assert status.banner(gate_db, FARM, now=T0 + dt.timedelta(days=4)) is None
+
+
+def test_a_block_between_two_failures_breaks_the_streak(gate_db):
+    quiet = dict(notifier=lambda s, b: None)
+    gated_sync_workbook_object(_broken(), FARM, TEST_DSN, now=T0 + dt.timedelta(days=1), **quiet)
+    _run("currency_invalid", now=T0 + dt.timedelta(days=2))
+    gated_sync_workbook_object(_broken(), FARM, TEST_DSN, now=T0 + dt.timedelta(days=3), **quiet)
+    assert "uploads could not be loaded" not in (status.banner(gate_db, FARM, now=T0 + dt.timedelta(days=3)) or "")
+
+
+def test_failed_loads_show_the_banner_in_chat_answers(gate_db):
+    quiet = dict(notifier=lambda s, b: None)
+    for d in (1, 2):
+        gated_sync_workbook_object(_broken(), FARM, TEST_DSN, now=T0 + dt.timedelta(days=d), **quiet)
+    q = "How many pigs do we have?"
+    a = answer_question_v2(q, gate_db, FakeRouter(script={q: S("active_headcount", domains=["piggery"])}), today=TODAY)
+    assert "uploads could not be loaded" in a.text.splitlines()[0]

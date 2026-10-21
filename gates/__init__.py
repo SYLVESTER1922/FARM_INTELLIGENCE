@@ -6,3 +6,4 @@ only on a pass. See gates/run.py (the gated sync), gates/checks.py (the gates), 
 
 BLOCK, WARN, REPORT = "block", "warn", "report"
 STALE_DAYS = 7
+STALE_AFTER_FAILED_LOADS = 2     # consecutive failed loads (outcome "error") after which the stale banner shows, as it does for a held-back upload older than STALE_DAYS

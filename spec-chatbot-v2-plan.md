@@ -802,8 +802,9 @@ Tests: 39 for the gates end to end (`tests/test_gates_dirty.py`, `tests/test_gat
    if either should block.
 3. **Month-without-rows is batch-aware for the daily logs.** A month in which no batch was on the farm is not a gap (the clean workbook has four such poultry months and
    a plain check warned on all four). Months inside a batch's span with no log rows do warn. Other tables use first month to last month.
-4. **A failed load is an `error`, not a hold-back.** It emails but shows no banner, because "a newer upload is being reviewed" would not be true. If errors repeat,
-   the snapshot gets old silently; say if repeated errors should also show the stale banner.
+4. **A failed load is an `error`, not a hold-back.** It emails, and one failure shows no banner ("a newer upload is being reviewed" would not be true). **Decided 2026-10-20:
+   after 2 consecutive failed loads the stale banner shows** ("⚠️ Data last verified <date> (N days ago). The last N uploads could not be loaded, so these figures may be out of
+   date."); a block or a good load breaks the streak. Choices 1, 2, 3 and 5 below were approved the same day.
 5. **Reconciliation at the default 5% flags 15 months of the clean synthetic workbook** (the daily logs and the inventory sheet were generated separately). It is
    report-only as planned; the tolerance is a guess until the first month of real data.
 
