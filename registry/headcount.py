@@ -85,7 +85,7 @@ register(Metric(
     answers="How many batches the farm has or has had, how many are active and how many were sold or closed, per domain.",
     does_not_answer="Which batches are ready to sell (market readiness).",
     compute=batch_count, eval_oracles=("batch_count",),
-    parity_exempt="The dashboard Data Coverage card counts batches but is not a per-status figure.",
+    dashboard=("fetch_data_coverage",),
 ))
 
 

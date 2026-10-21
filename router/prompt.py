@@ -11,7 +11,7 @@ from catalog.untracked import KNOWN
 from registry import REGISTRY
 from router.spec import ALLOWED_DIMENSIONS
 
-PROMPT_VERSION = "v5"
+PROMPT_VERSION = "v6"
 
 _RULES = """\
 You are the routing step of a farm-management assistant. You do NOT answer questions and you NEVER compute numbers or dates.

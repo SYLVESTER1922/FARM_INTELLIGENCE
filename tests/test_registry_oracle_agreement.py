@@ -9,10 +9,12 @@ import pytest
 
 from evals.case_specs import SPECS
 from evals.cases_dev import CASES
+from evals.cases_dev_drafts import DRAFT_SPECS, DRAFTS
 from evals.oracle import Oracle
 from registry import compute
 
-BY_ID = {c.id: c for c in CASES}
+BY_ID = {c.id: c for c in CASES + DRAFTS}
+ALL_SPECS = {**SPECS, **DRAFT_SPECS}          # the drafts are checked against the oracle before Sylvester reviews them
 NO_RECORD_ORACLES = {"feed_cost_no_data", "no_record"}
 
 
@@ -45,10 +47,10 @@ def _has(nums, want, sign_agnostic=False):
     return any(abs((abs(n) if sign_agnostic else n) - (abs(want) if sign_agnostic else want)) <= 0.005 for n in nums)
 
 
-@pytest.mark.parametrize("case_id", sorted(SPECS))
+@pytest.mark.parametrize("case_id", sorted(ALL_SPECS))
 def test_registry_agrees_with_the_oracle(farm_db, case_id):
     case = BY_ID[case_id]
-    metric, scope = SPECS[case_id]
+    metric, scope = ALL_SPECS[case_id]
     name, kwargs = case.oracle
     exp = getattr(Oracle(farm_db), name)(**kwargs)
     result = compute(metric, farm_db, scope)

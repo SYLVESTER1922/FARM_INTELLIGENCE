@@ -7,6 +7,7 @@ vocabulary and the numbered options offered when a refusal reads two ways:
 
     not_tracked         the farm does not record this at all (the text says what to log to make it answerable)
     tracked_no_metric   the data IS recorded (a table exists) but no metric reads it yet (the text must not deny it is recorded)
+    policy              the data is recorded but the farm has decided chat must not show it (per-person pay)
     action              a request to change data; the bot is read-only
 
 An LLM never asserts any of these by itself: a refusal needs the user's own words behind it (`cues`), else the answer is a question.
@@ -19,7 +20,7 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class Untracked:
     code: str
-    kind: str                    # not_tracked | tracked_no_metric | action
+    kind: str                    # not_tracked | tracked_no_metric | policy | action
     hint: str                    # one line for the router prompt: when to choose this refusal
     text: str                    # the fixed reply
     cues: re.Pattern = None      # wording that must be present for the model's choice to stand (None: no support needed)
@@ -69,11 +70,17 @@ KNOWN = (
         _rx(r"\b(payroll|payslips?|pay ?slips?|salary history|pay history|paid out)\b"), "labour",
         "Payroll history (not recorded; I can explain what is)"),
     Untracked(
-        "staff_info", "tracked_no_metric", "who works on the farm, their roles or pay rates",
-        "Staff names, roles and pay rates are recorded, but I can't answer questions about them yet. I can show labour cost, "
+        "staff_info", "tracked_no_metric", "who works on the farm and their roles",
+        "Staff names and roles are recorded, but I can't answer questions about them yet. I can show labour cost, "
         "hours worked and overtime.",
-        _rx(r"\b(staff|employees?|workers?|labourers?|who works|pay rates?|salary|salaries|wages?|people work\w*)\b"), "labour",
-        "Staff names, roles and pay rates (recorded, but I can't answer questions about them yet)", ("staff",)),
+        _rx(r"\b(staff|employees?|workers?|labourers?|who works|people work\w*|supervisors?|roles?)\b"), "labour",
+        "Staff names and roles (recorded, but I can't answer questions about them yet)", ("staff",)),
+    Untracked(
+        "staff_pay", "policy", "what an individual person is paid: pay rates, salary, wage per worker",
+        "I don't show what individual people are paid. I can show total labour cost, hours worked and overtime for the farm "
+        "or for a section.",
+        _rx(r"\b(pay rates?|rates? of pay|hourly rates?|daily rates?|salary|salaries|wages?|earn\w*|paid|pay)\b"), "labour",
+        "What an individual is paid (I don't show per-person pay; I can show total labour cost)"),
     Untracked(
         "crop_scouting", "tracked_no_metric", "crop pest, disease, weed or growth-stage scouting records",
         "Crop scouting records (pests, diseases, growth stage, soil moisture) are logged, but I can't answer questions about "
@@ -102,8 +109,8 @@ OUT_OF_SCOPE = ("out_of_scope",
 UNEXPOSED = {
     "farm_profile": ("internal", "The farm's own settings: name, currency, which modules are on."),
     "list_values": ("internal", "The drop-down lists the workbook uses; not farm data."),
-    "staff": ("tracked_no_metric", "Staff names, roles and pay rates. Pay rates are personal data: whether chat should show them is for the "
-                                   "farm to decide, so the refusal says it is recorded but not available yet."),
+    "staff": ("tracked_no_metric", "Staff names, roles and pay rates. Decision (plan 24.2): chat never shows per-person pay (the staff_pay "
+                                   "refusal); names and roles are recorded but no metric reads them yet."),
     "scouting_log": ("tracked_no_metric", "Crop scouting: pests, diseases, growth stage, soil moisture."),
     "field_operations": ("tracked_no_metric", "Crop field work: applications, irrigation, machine and labour hours per planting."),
 }

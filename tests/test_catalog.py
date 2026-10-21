@@ -1,5 +1,6 @@
 """Step 6: the capability catalog is generated from the registry, and the schema is checked against it (plan sections 4 and 8)."""
 
+import datetime as dt
 import pathlib
 import re
 
@@ -119,3 +120,25 @@ def test_a_recorded_data_claim_without_the_users_words_is_a_question_to_the_near
     q = "How are things looking in the fields?"
     a = answer_question_v2(q, farm_db, FakeRouter(script={q: S("none", refusal="crop_scouting")}))
     assert a.code == "claim_or_metric" and "Crops planted" in a.text and "I can't answer questions about them yet" in a.text
+
+
+@pytest.mark.parametrize("question", [
+    "What is the pay rate for each worker?", "How much does Tendai earn?", "What is Tendai's salary?", "Show me salary per employee",
+    "What is the hourly rate of our staff?", "What are the wages for each labourer this month?"])
+def test_per_person_pay_is_refused_by_policy_whatever_the_model_picked(farm_db, question):
+    a = answer_question_v2(question, farm_db, FakeRouter(script={question: S("labour")}))
+    assert (a.kind, a.code, a.claim) == ("refusal", "staff_pay", False) and a.text == BY_CODE["staff_pay"].text
+    assert "total labour cost" in a.text and not re.search(r"\b(isn't|aren't|not) (recorded|tracked)\b", a.text)
+
+
+@pytest.mark.parametrize("question", [
+    "What was our total labour cost last month?", "How much did we spend on salaries in August 2026?",
+    "How many hours of overtime were worked in August 2026?", "What did we pay in wages this year?"])
+def test_total_labour_cost_is_still_answered(farm_db, question):
+    a = answer_question_v2(question, farm_db, FakeRouter(script={question: S("labour")}), today=dt.date(2026, 10, 15))
+    assert a.kind in ("answer", "clarify") and a.code != "staff_pay"
+
+
+def test_the_staff_pay_refusal_is_listed_in_what_the_bot_cannot_do():
+    assert "Not shown, by choice: what an individual person is paid" in limits_text()
+    assert BY_CODE["staff_pay"].kind == "policy" and not BY_CODE["staff_pay"].claim

@@ -233,9 +233,13 @@ What the weather is or was on the latest logged day (today's weather), or how mu
 
 ### Recorded, but no metric reads it yet
 
-- **staff_info** (who works on the farm, their roles or pay rates): Staff names, roles and pay rates are recorded, but I can't answer questions about them yet. I can show labour cost, hours worked and overtime.
+- **staff_info** (who works on the farm and their roles): Staff names and roles are recorded, but I can't answer questions about them yet. I can show labour cost, hours worked and overtime.
 - **crop_scouting** (crop pest, disease, weed or growth-stage scouting records): Crop scouting records (pests, diseases, growth stage, soil moisture) are logged, but I can't answer questions about them yet. I can show the land planted, the crops grown and harvest yields.
 - **field_operations** (crop field work: spraying, irrigation, applications, machine hours): Field operations (sprayings, fertiliser and chemical applications, irrigation, machine and labour hours for each planting) are logged, but I can't answer questions about them yet. I can show what was spent on fertiliser and chemicals, and harvest yields.
+
+### Not shown, by choice
+
+- **staff_pay** (what an individual person is paid: pay rates, salary, wage per worker): I don't show what individual people are paid. I can show total labour cost, hours worked and overtime for the farm or for a section.
 
 ### Not allowed
 
@@ -251,4 +255,4 @@ What the weather is or was on the latest logged day (today's weather), or how mu
 - `field_operations` (tracked_no_metric): Crop field work: applications, irrigation, machine and labour hours per planting.
 - `list_values` (internal): The drop-down lists the workbook uses; not farm data.
 - `scouting_log` (tracked_no_metric): Crop scouting: pests, diseases, growth stage, soil moisture.
-- `staff` (tracked_no_metric): Staff names, roles and pay rates. Pay rates are personal data: whether chat should show them is for the farm to decide, so the refusal says it is recorded but not available yet.
+- `staff` (tracked_no_metric): Staff names, roles and pay rates. Decision (plan 24.2): chat never shows per-person pay (the staff_pay refusal); names and roles are recorded but no metric reads them yet.

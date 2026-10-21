@@ -221,6 +221,10 @@ def _continue(q, conn, llm_res, spec, farm_code, today, dashboard_filter, week_s
     if crosscheck.accounts_payable_wording(q):
         return _refuse("accounts_payable", refusals.text("accounts_payable"), claim=True, spec=spec, llm=llm_res)
 
+    # ---- what an individual is paid is withheld by policy, whatever the model picked
+    if crosscheck.staff_pay_wording(q):
+        return _refuse("staff_pay", refusals.text("staff_pay"), claim=False, spec=spec, llm=llm_res)
+
     # ---- the model says nothing fits, or cannot decide between metrics
     if spec.ambiguous_between:
         remembered = ((session or {}).get("metric_choice") or {}).get(tuple(sorted(spec.ambiguous_between)))

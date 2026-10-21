@@ -28,6 +28,7 @@ class Case:
     week_start: str = None         # the farm's first weekday for this case (default monday)
     split: str = "dev"
     review: str = ""               # what the reviewer should check about this case
+    refusal: str = ""              # refuse cases: the catalog refusal class the question belongs to (catalog.untracked code)
 
     def __post_init__(self):
         if self.zt is None:

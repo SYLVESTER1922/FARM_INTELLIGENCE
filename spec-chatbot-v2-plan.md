@@ -535,34 +535,24 @@ by kind) are in `evals/variants/spot_check.csv` for a person to confirm "same me
 done**, and until it is, a "wrong" here may be a rewrite that changed the question. The variants of one source form a cluster (176 clusters).
 The generating model also routes, so this probe is somewhat optimistic.
 
-Untuned figures (prompt v4, 3 repeats, before any fix made because of the probe):
+**The original untuned variant wrong rate (prompt v4, 3 repeats, before any fix made because of the probe) is: gpt-4.1 15 wrong of 523
+variants (2.9%), gpt-4o-mini 17 wrong of 523 (3.3%).** These are the only untuned variant figures. After Sylvester's decision of 2026-10-20 to
+remove the three rewrites whose meaning drifted (`fc06-pa`, `fp03-pa`, `pf06-mx`; recorded with reasons in `evals/variants.py` `REMOVED`, and
+excluded from any regenerated or loaded set), the same untuned runs read: gpt-4.1 12 wrong of 520 (2.3%), gpt-4o-mini 17 wrong of 520 (3.3%).
+Every figure from a later run on these variants is **tuned**: fixes were made from these failures, so it is not evidence about unseen questions.
 
 | Run | Correct | Wrong | Refused | Clarified | Wrong, money + headcount |
 |---|---|---|---|---|---|
 | gpt-4.1, tuned dev set (176) | 96.6% | 0 | 0% | 3.4% | 0 of 117 |
-| gpt-4.1, variants (523) | 74.4% | 15 (2.9%) | 4.2% | 18.5% | 10 of 351 |
+| **gpt-4.1, variants, UNTUNED (523 as run)** | 74.4% | **15 (2.9%)** | 4.2% | 18.5% | 10 of 351 |
+| gpt-4.1, variants, UNTUNED (520 after removal) | 74.8% | 12 (2.3%) | 4.2% | 18.7% | 7 of 348 |
 | gpt-4o-mini, tuned dev set | 93.8% | 0 | 1.7% | 4.5% | 0 of 117 |
-| gpt-4o-mini, variants | 61.8% | 17 (3.3%) | 16.1% | 18.9% | 13 of 351 |
+| **gpt-4o-mini, variants, UNTUNED (523 as run)** | 61.8% | **17 (3.3%)** | 16.1% | 18.9% | 13 of 351 |
+| gpt-4o-mini, variants, UNTUNED (520 after removal) | 62.1% | 17 (3.3%) | 15.6% | 19.0% | 13 of 348 |
 
-By kind (wrong / refused / clarified): gpt-4.1 typo 1.7% / 4.0% / 16.5%, paraphrase 4.0% / 3.4% / 11.4%, mixed 2.9% / 5.2% / 27.9%;
-gpt-4o-mini typo 1.1% / 10.8% / 15.9%, paraphrase 6.3% / 9.1% / 10.9%, mixed 2.3% / 28.5% / 30.2%. In clusters: 15 of 176 sources had a wrong variant
-for gpt-4.1, 17 for gpt-4o-mini. So **the tuned 0% does not carry over: roughly 3% of unseen phrasings were answered wrongly**, and more than
-a tenth to a fifth were turned into a clarifying question.
-
-What the wrong answers were (gpt-4.1, 15): 8 were bugs in code that no model change would fix, now fixed (a "this date in the previous
-month" wording silently answered as the whole month, x4; a batch code with a typo answered with a misleading "needs two samples", x2; a
-comparison hidden by a typo, "comare to last montth"; and spend on feed read as one of two metrics without asking, x1); 3 were rewrites
-whose meaning drifted or became ambiguous ("income" for "net income", "pay for chicken feed" for "spent feeding the chickens"); 3 were
-the model misreading Shona or Ndebele; 1 is a known limit (a comparison phrased with a noun between the cue and the period, "pigs relative to
-the number we had on this day last month"). Defects found and fixed in code: the first line of a category question did not say which category
-(a wrong-scope hazard); the same-day wordings; period words with typos (`last montth`); the comparison cues (`relative to`, typos in
-`compare`); an unknown batch code is now a question with the closest guess; "spend/expense on feed" with nothing saying bought or eaten is
-asked about in code, not left to the model, and the answer is remembered for the conversation; Shona and Ndebele nouns for pigs, chickens
-and maize, including prefixed forms ("nehuku"), now name their section.
-
-After those fixes, gpt-4o-mini on the variants (no longer untuned, because the fixes were made from these failures): 70.2% correct, 6 wrong
-(1.1%), 14.5% refused, 14.1% clarified; typo 0 wrong, paraphrase 1 wrong, mixed 5 wrong. The tuned dev set did not regress (gpt-4o-mini 94.3%,
-gpt-4.1 97.2%, 0 wrong). gpt-4.1 was not re-run on the variants after the fixes (about $10 and 20 minutes).
+**Tuned afterwards** (not untuned): gpt-4o-mini on the 523 variants after the code fixes and prompt v5: 70.2% correct, 6 wrong (1.1%), 14.5%
+refused, 14.1% clarified; typo 0 wrong, paraphrase 1 wrong, mixed 5 wrong. The tuned dev set did not regress (gpt-4o-mini 94.3%, gpt-4.1 97.2%,
+0 wrong). gpt-4.1 was not re-run on the variants after the fixes (about $10 and 20 minutes), so there is no tuned gpt-4.1 variant figure.
 
 ### 23.5 Language support: what happens when a question is not in English
 
@@ -599,7 +589,7 @@ Done so far:
   vocabulary; no other rule changed.
 - **Schema coverage check.** A test fails if any table in the schema is neither read by a metric nor listed as unexposed with a class and a reason.
   It currently lists five: `farm_profile` and `list_values` (internal), and `staff`, `scouting_log`, `field_operations` (recorded, no metric yet).
-  Whether chat may ever show staff pay rates is the farm's decision and is recorded as such.
+  Whether chat may show per-person pay is decided in section 25.4: it may not.
 - **`explain_gap` and `DATA_DICTIONARY` are not used by the new path** (a test scans the new packages for them). They are deleted with the
   old engine at the end of step 9, as `grounding.py` is.
 
@@ -607,5 +597,125 @@ Measured after the change (dev set, 3 repeats, prompt v5): gpt-4.1 171 of 176 co
 gpt-4o-mini 166 correct (94.3%), 0 wrong, 1.7% refused, 4.0% clarified. **False "we don't track that": 0 of 151 answerable dev questions for
 both models** (the old engine: 7 of 142; the first router run: 2 of 151). Refusal rate: every refusal the gpt-4.1 run gave was an expected one.
 
-Still to do in step 6: dev cases for the three new refusal classes (Sylvester approves cases), and the question of whether the "recorded, no
-metric yet" tables should get metrics before launch (the client's top 20 will say).
+Still to do in step 6: Sylvester's review of the draft dev cases for the new refusal classes (section 25.2), and the question of whether the
+"recorded, no metric yet" tables should get metrics before launch (the client's top 20 will say). Section 25 continues this step.
+
+## 25. Decisions of 2026-10-20 and what they changed
+
+### 25.1 Parity exemptions
+
+Sylvester's rule: any metric in the money or headcount groups that has an exemption must be fixed, not exempted; an exemption is approved only
+for a metric with no dashboard counterpart or a documented difference. Of the nine exemptions listed in 23.2, four were fixed by finding the
+dashboard figure that does exist and adding a real parity test, and five remain:
+
+| Metric | Group | Zero tolerance | Was exempt because | Now |
+|---|---|---|---|---|
+| Feed purchases | money | yes | the dashboard shows expense by category | **Fixed.** The dashboard's "Feed" expense category must equal the registry figure (`test_parity_fetch_expense_breakdown_feed_purchases`) |
+| Profit | money | yes | the dashboard never shows the difference | **Fixed.** Revenue line minus expense line of the Expenses vs Revenue chart must equal profit, all time and for a filter |
+| Batch count | headcount | yes | the Data Coverage card is not a per-status figure | **Fixed for the part that exists.** The card's batches per domain must equal "N batches in total"; the status split (active, sold, closed) has no dashboard figure and stays covered by the oracle |
+| Feed cost per animal | money | yes | no card shows a per-animal figure | **Fixed for the part that exists.** The Finance page's feed cost per domain must equal the numerator; the denominator (mean daily headcount over the days logged) is documented as different from the dashboard's month-end headcount and is checked against the independent oracle |
+| Labour | money | yes | no dashboard page shows labour | **Remains. For approval:** there is no dashboard counterpart (the dashboard has no labour page or card); every dev case is checked against the oracle |
+| Sow count | headcount | yes | no dashboard page lists sows | **Remains. For approval:** the Breeding table lists sow tags from service records, not the sow register; no counterpart; oracle-checked |
+| Feed stock | operations | no | no dashboard page shows feed stock on hand | Remains. For approval: no counterpart |
+| Market readiness | operations | no | no dashboard page lists market readiness | Remains. For approval: no counterpart |
+| Weather | operations | no | no dashboard page shows weather | Remains. For approval: no counterpart |
+
+Honest limit of parity in general: several dashboard queries now call the registry (decision D1), so those parity tests check that the page
+adapts the registry's figure correctly, not that two independent calculations agree. Independent agreement comes from the oracle tests.
+
+### 25.2 Case minimums, drafts and the Gate A count
+
+Sylvester set N: **8 dev cases per zero-tolerance metric (money, headcount), 4 per other metric, 5 per refusal class that is new in step 6**,
+covering phrasings, periods, domains and the refuse and clarify paths. The held-out target later is about 16 per zero-tolerance metric.
+Against these minimums 11 of 21 metrics are met with approved cases (not the three assumed earlier: ten metrics fall short, six zero-tolerance
+and four others). `evals/cases_dev_drafts.py` holds **43 draft cases, dev-only and not in `CASES`, awaiting Sylvester's review**: 23 for the
+ten short metrics (including one refuse path, `dsw05`, and one clarify path, `dca05`) and 20 for the four refusal classes (staff names and
+roles, per-person pay, crop scouting, crop field operations; 5 each). The questions were written before the router was run on them. Their
+expected figures are checked against the registry by the oracle-agreement test (172 cases pass). With the drafts approved, `evals.gate_a_audit`
+shows 21 of 21 metrics and 4 of 4 refusal classes at or above the minimum. Run them with `python -m evals.run_v2 --drafts`.
+
+First (untuned) run of the drafts, gpt-4.1, prompt v6, 3 repeats: 40 of 43 correct, 1 wrong, 0 refused, 2 clarified. The wrong one is `dca05`
+("How much does each animal cost us?"): the bot answered, labelled "Feed cost per animal", where the draft expects a question. Whether that is
+a wrong answer or an acceptable labelled one is Sylvester's call when reviewing the case. The two clarifications: `dca01` ("What was the feed
+cost per pig in August 2026?") asked "which part of the farm" although the question names pigs (the cross-check saw a domain word the model
+did not return and asks rather than picks, as designed; it is an over-ask worth deciding on), and `dfo04` ("When did we last apply fertiliser to
+the maize?") asked whether the user meant fertiliser spend or field operations, which is reasonable. Nothing was tuned to these.
+
+### 25.3 Variant set
+
+The three meaning-drifted rewrites were removed (section 23.4). The original untuned wrong rates and the tuned-afterwards figures are now
+separated there.
+
+### 25.4 Staff pay: chat does not show per-person pay (policy)
+
+Decision: total labour cost, hours and overtime are answered; **what an individual is paid is never shown**. Per-person pay now has its own
+named refusal, `staff_pay` (kind `policy`: the data exists, the farm has chosen not to show it), distinct from `staff_info` (names and roles:
+recorded, no metric yet). The refusal says "I don't show what individual people are paid" and offers total labour cost, hours and overtime.
+It is enforced in code, not left to the model: wording that asks what an individual earns, a pay rate, an hourly rate, a salary per worker
+or "X's salary" gets the refusal whatever the model chose, while totals ("total salaries", "wages spent") still go to the labour metric.
+Tests cover both sides. The labour metric has no per-person breakdown, so there is nothing else to hide. Prompt v6 adds the refusal to the
+generated vocabulary; the refusal wording is not model-authored. This policy is a limit, not a claim: the Gate C statement covers answers
+given, and a refused pay question is a correct refusal.
+
+### 25.5 Proposal (not built): a deterministic guard for mixed-language questions
+
+*Idea.* Before the model is called, count words that are neither English (a dictionary plus the registry and lexicon vocabulary) nor a
+near-miss of one (a typo within one or two letters); if there are any, reply with an English clarifying question ("I understand English
+questions best. Could you ask it in English?") instead of letting the model guess at Shona or Ndebele. The cross-checks cannot see a misread
+foreign word, which is where the residual wrong answers come from.
+
+*Measured offline on the saved variant runs (a throwaway prototype, nothing added to the repo), with the caveat that the English vocabulary
+included the dev questions' own words, so false firing on English dev questions (0 of 176) is understated and needs a held-out English
+sample:*
+
+| Guard fires when | Typo variants | Paraphrases | Mixed-language | What it would have done to the mixed ones (gpt-4.1) |
+|---|---|---|---|---|
+| 1 or more unknown words | 13 of 176 (7.4%) | 3 of 173 (1.7%) | 123 of 171 (72%) | stops all 3 wrong answers; also turns 72 correct answers and 7 refusals into clarifications (41 were already clarifications) |
+| 2 or more unknown words | 0 | 0 | 37 of 171 (22%) | stops none of the wrong answers; turns 12 correct answers into clarifications |
+
+*Effect on the clarified-rate budget (5% on answerable questions).* On English traffic the guard costs the typo false-fires: at threshold 1,
+7.4% of typo'd questions, so about 0.4 to 0.7 percentage points if 5 to 10% of questions have typos; at threshold 2 nothing. On genuinely mixed
+traffic it moves the clarified rate from 28% to about 72% (threshold 1), which is the intended, honest behaviour for an unsupported language and
+a clear cost if clients write that way. Threshold 2 is not worth building (it catches none of the wrong answers). **Recommendation: do not
+build yet.** Wait for the client's real top-20 wording (step 0.5): if mixed-language questions are rare, the guard at threshold 1 is a cheap
+way to remove a roughly 2% silent-wrong tail on that traffic; if they are common, the right fix is a speaker-reviewed lexicon and a real
+multilingual test set, not a guard that refuses them.
+
+### 25.6 Claude comparison
+
+Decision: when an Anthropic key exists, run the Claude candidate on the **dev set only** (no variants, no locked set), then confirm the pin.
+No key exists yet (`ANTHROPIC_API_KEY` is unset; no key file). Nothing was run for Claude this round.
+
+### 25.7 Quota detection fix
+
+During the prompt v6 re-run the OpenAI account ran out of credit again. The error now arrives as code `credit_balance_exhausted` (type
+`insufficient_quota`), which the detection did not recognise: the bot answered "busy, try again in a minute" and sent no alert. Detection now
+accepts either code or the type (`is_quota_error`, tested). Credit has to be added again before any further model run. The gpt-4o-mini v6
+dev run was discarded because 512 of its calls failed on this, so **there is no gpt-4o-mini figure for prompt v6** (v5: 94.3%, 0 wrong).
+Cost control from here: no paid run without Sylvester's go-ahead and a stated estimate (gpt-4.1 about $0.0066 per question; a full dev run of
+176 cases x 3 repeats is about $3.50, the 43 drafts about $0.85).
+
+### 25.8 Gate A, item by item (judged 2026-10-20)
+
+| Item | Status | Basis |
+|---|---|---|
+| Definition, template: every metric | **Pass** | 21 of 21 each |
+| Parity test: every metric | **Pass once 5 exemptions are approved** | 16 of 21 have a parity test; labour, sow count, feed stock, market readiness and weather have no dashboard counterpart (25.1) |
+| Eval cases: N per metric | **Cannot pass until Sylvester approves the 43 drafts** | approved cases meet N for 11 of 21 metrics; with the drafts 21 of 21 and 4 of 4 refusal classes |
+| Resolver and rendering tests | **Pass** | full suite passes; resolver and render line coverage 100% |
+| Dev wrong rate at most 2% | **Pass on the current 176 (tuned); to be re-judged on 219 with the drafts** | gpt-4.1, prompt v6: 171 of 176 correct, 0 wrong, 0 refused, 2.8% clarified, $0.0066 per question. On the 43 drafts, untuned: 1 wrong (2.3%), for Sylvester to judge |
+| Model chosen by bake-off and pinned | **Not met** | gpt-4.1 provisional; Claude needs a key, dev set only (25.6); the pin is confirmed on the locked set later |
+
+**Gate A can be judged once three inputs arrive:** approval or edits of the 43 drafts, sign-off of the 5 remaining parity exemptions, and an
+Anthropic key (plus OpenAI credit). It is not met today.
+
+### 25.9 The test suite spends OpenAI credit
+
+`tests/conftest.py` loads `~/.openai_api_key`, and about 20 old-engine test files (`test_chatbot_tier3_*`, `test_chatbot_tool_selection_eval`,
+`test_ui_app`, `test_chatbot_grounding`) call OpenAI live, so **every full `pytest tests` run spends credit and fails if the account is empty**
+(a run with the account empty gave 90 failures, all in those files; the next run gave 1650 passed and 1 flaky failure,
+`test_chatbot_tier3_breeding_summary`, which passes alone and on the previous commit). The new-path tests (`router`, `registry`, `resolver`,
+`render`, `catalog`, `evals`) use no key. Until the old engine is deleted (step 9) run the new-path tests with
+`python -m pytest tests -q --ignore-glob='tests/test_chatbot*' --ignore=tests/test_ui_app.py` when a quick, free check is wanted. Nothing in the old
+engine or its tests was changed.
+

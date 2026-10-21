@@ -272,15 +272,17 @@ class Oracle:
         return Expect(words=[human_date(latest)], words_any=["recorded", "no "],
                       note=f"no {what} for this period: must say so and name the latest record, {human_date(latest)}")
 
-    def feed_cost_per_animal(self, domain=None):
-        """Feed consumed cost / average headcount (mean daily total headcount over the days logged)."""
-        by = self.feed_consumed(None, None)
+    def feed_cost_per_animal(self, domain=None, start=None, end=None):
+        """Feed consumed cost / average headcount (mean daily total headcount over the days logged in the period)."""
+        by = self.feed_consumed(start, end)
+        lo, hi = self.bounds(start, end)
         cost, avg = Decimal(0), Decimal(0)
         for d, (log, cnt) in {"piggery": ("pig_daily_log", "closing_count"),
                               "poultry": ("poultry_daily_log", "closing_birds")}.items():
             if domain in (None, d):
                 cost += Decimal(str(by.get(d, (0, 0))[1]))
-                avg += Decimal(str(self.one(f"SELECT AVG(t) FROM (SELECT SUM({cnt}) t FROM {log} GROUP BY date) s")))
+                mean = self.one(f"SELECT AVG(t) FROM (SELECT SUM({cnt}) t FROM {log} WHERE date BETWEEN %s AND %s GROUP BY date) s", (lo, hi))
+                avg += Decimal(str(mean or 0))
         return Expect(required=[hu(cost / avg, 2)], note=f"{cost} / avg headcount {avg:.1f}")
 
     def feed_purchases(self, domain=None, start=None, end=None):

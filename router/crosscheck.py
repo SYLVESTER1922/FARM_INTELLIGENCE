@@ -92,6 +92,19 @@ NEAR_METRIC = {u.code: u.near_metric for u in KNOWN if u.near_metric}
 NOT_TRACKED_OPTION = {u.code: u.option for u in KNOWN if u.near_metric}
 
 
+_STAFF_PAY = re.compile(
+    r"\b(pay rates?|rates? of pay|hourly rates?|daily rates?|salary (?:of|for)|\w+ s (?:salary|wage|pay)|"
+    r"(?:salary|salaries|wages?|pay|paid|earns?|earnings?)\b.{0,40}\b(?:each|every|per|individual|which|any) (?:worker|employee|staff|person|labourer)|"
+    r"(?:each|every|per|individual|which|any) (?:worker|employee|staff|person|labourer)\b.{0,40}\b(?:salary|salaries|wages?|pay|paid|earns?|earnings?)|"
+    r"(?:how much|what) (?:does|do|is|are) (?!we\b|our\b|the farm\b)[a-z' ]{1,30}(?:earn|get paid|gets paid))\b")
+
+
+def staff_pay_wording(question: str) -> bool:
+    """Per-person pay is withheld by policy (plan 24.2): wording that asks what an individual is paid is refused whatever the model
+    picked. Totals ("total salaries this month", "wages spent") are labour cost and are not matched."""
+    return bool(_STAFF_PAY.search(normalise(question)))
+
+
 def accounts_payable_wording(question: str) -> bool:
     return bool(_ACCOUNTS_PAYABLE.search(normalise(question)))
 

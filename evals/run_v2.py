@@ -265,6 +265,7 @@ def main():
     ap.add_argument("--variants", default="", help="run the generated variants in this JSON file instead of the dev questions")
     ap.add_argument("--kinds", default="typo,paraphrase,mixed")
     ap.add_argument("--baseline", default="", help="a tuned dev-run JSON of the same model, to print beside the variants")
+    ap.add_argument("--drafts", action="store_true", help="run the draft cases (evals/cases_dev_drafts.py, not yet reviewed) instead of the dev set")
     ap.add_argument("--no-rebuild", action="store_true")
     ap.add_argument("--wrong", action="store_true", help="print every wrong case")
     args = ap.parse_args()
@@ -273,6 +274,9 @@ def main():
     load_openai_key()
     cases = load_cases(include_locked=False)                    # dev only; a locked case is refused
     kind_of = source_of = None
+    if args.drafts:
+        from evals.cases_dev_drafts import DRAFTS
+        cases = list(DRAFTS)
     if args.variants:
         from evals import variants as V
         from evals.case_specs import SPECS as _SPECS
@@ -305,7 +309,7 @@ def main():
             continue
         s = summarise(results)
         summaries[model] = s
-        label = "variants-" if args.variants else ""
+        label = "variants-" if args.variants else ("drafts-" if args.drafts else "")
         extra = {}
         if args.variants:
             baseline = json.loads(Path(args.baseline).read_text()) if args.baseline else None

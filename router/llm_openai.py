@@ -14,6 +14,17 @@ MODES = ("json_schema", "tool")
 DEFAULT_MODE = "json_schema"           # fail closed: no retries, a slow or failed call is reported, never papered over (plan D11)
 
 
+QUOTA_CODES = ("insufficient_quota", "credit_balance_exhausted", "billing_not_active")
+
+
+def is_quota_error(e) -> bool:
+    """An exhausted or inactive account. OpenAI has reported this as code `insufficient_quota` and, since October 2026, as code
+    `credit_balance_exhausted` with type `insufficient_quota`; either way waiting does not help, so it is never retried."""
+    body = getattr(e, "body", None) or {}
+    body = body.get("error", body) if isinstance(body, dict) else {}
+    return getattr(e, "code", None) in QUOTA_CODES or body.get("code") in QUOTA_CODES or body.get("type") == "insufficient_quota"
+
+
 class OpenAIRouter:
     provider = "openai"
 
@@ -54,7 +65,7 @@ class OpenAIRouter:
         except Exception as e:                                   # timeout, rate limit, connection, bad request ...
             res.latency_s = time.perf_counter() - t0
             # A 429 for an exhausted account is not a rate limit: waiting a minute will not fix it, so it is not retried.
-            res.error = "InsufficientQuota" if getattr(e, "code", None) == "insufficient_quota" else type(e).__name__
+            res.error = "InsufficientQuota" if is_quota_error(e) else type(e).__name__
             if res.error == "InsufficientQuota":
                 res.detail = str(e)[:300]
             return res

@@ -1034,17 +1034,6 @@
   "seed": 20261019
  },
  {
-  "id": "fc06-pa",
-  "source_id": "fc06",
-  "kind": "paraphrase",
-  "question": "How much did we pay for chicken feed during April 2026?",
-  "source_question": "What did we spend feeding the chickens in April 2026?",
-  "generated": true,
-  "generator": "gpt-4.1",
-  "language": null,
-  "seed": 20261019
- },
- {
   "id": "fc06-mx",
   "source_id": "fc06",
   "kind": "mixed",
@@ -1426,17 +1415,6 @@
   "source_question": "How much did we spend buying feed for the pigs?",
   "generated": true,
   "generator": "code",
-  "language": null,
-  "seed": 20261019
- },
- {
-  "id": "fp03-pa",
-  "source_id": "fp03",
-  "kind": "paraphrase",
-  "question": "What was the total expenditure on pig feed?",
-  "source_question": "How much did we spend buying feed for the pigs?",
-  "generated": true,
-  "generator": "gpt-4.1",
   "language": null,
   "seed": 20261019
  },
@@ -2560,17 +2538,6 @@
   "generated": true,
   "generator": "gpt-4.1",
   "language": null,
-  "seed": 20261019
- },
- {
-  "id": "pf06-mx",
-  "source_id": "pf06",
-  "kind": "mixed",
-  "question": "Yimalini imali yethu engenayo?",
-  "source_question": "What's our net income?",
-  "generated": true,
-  "generator": "gpt-4.1",
-  "language": "Ndebele",
   "seed": 20261019
  },
  {

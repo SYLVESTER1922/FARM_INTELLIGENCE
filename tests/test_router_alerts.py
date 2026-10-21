@@ -93,3 +93,17 @@ def test_an_alert_that_raises_cannot_break_the_reply(farm_db):
     # the real hook swallows its own errors (here the "connection" is not even a connection)
     out = alerts.report_quota_error(object(), quota(), notifier=Outbox(), today=D1)
     assert not out["logged"] and "alert failed" in out["reason"]
+
+
+def test_an_exhausted_account_is_recognised_under_either_error_code():
+    from router.llm_openai import is_quota_error
+
+    class E(Exception):
+        def __init__(self, code=None, body=None):
+            self.code, self.body = code, body
+
+    assert is_quota_error(E("insufficient_quota"))
+    assert is_quota_error(E("credit_balance_exhausted"))
+    assert is_quota_error(E(None, {"error": {"code": "credit_balance_exhausted", "type": "insufficient_quota"}}))
+    assert not is_quota_error(E("rate_limit_exceeded", {"error": {"code": "rate_limit_exceeded", "type": "requests"}}))
+    assert not is_quota_error(E())

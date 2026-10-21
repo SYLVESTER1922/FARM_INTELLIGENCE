@@ -42,3 +42,8 @@ in two of three repeats. The other v3 additions stay.
 The refusal vocabulary is now generated from the curated list in `catalog/untracked.py` (step 6) instead of written in the prompt: three
 refusal classes were added for data that IS recorded but that no metric reads (`staff_info`, `crop_scouting`, `field_operations`) and
 one for payroll history. No other rule changed. Measured after the change: see plan section 24.
+
+## v6 - per-person pay is a named refusal (policy, plan 24.2)
+Only change: the refusal vocabulary, generated from `catalog.untracked.KNOWN`, gains `staff_pay` ("what an individual person is paid") and
+`staff_info` no longer mentions pay. No example or rule was added or reworded by hand. Not run against the model yet: the dev cases for this
+class are drafts awaiting review (evals/drafts), so no eval figure is claimed for v6.

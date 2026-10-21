@@ -39,6 +39,16 @@ def test_parity_fetch_feed_cost_by_month(farm_db, df, dt_):
 
 
 @pytest.mark.parametrize("df,dt_", FILTERS)
+def test_parity_fetch_feed_cost_by_domain_per_animal_numerator(farm_db, df, dt_):
+    """No dashboard card shows a per-animal figure, so only the numerator has a page to match: the feed cost the Finance page shows
+    per domain is the feed cost the per-animal answer divides. The denominator (mean daily headcount over the days logged) differs from
+    the dashboard's month-end headcount by definition; the figure itself is checked against the independent oracle."""
+    page = {r["domain"]: r["feed_cost"] for r in q.fetch_feed_cost_by_domain(farm_db, df, dt_)}
+    r = reg(farm_db, "feed_cost_per_animal", start=df, end=dt_)
+    assert {x["domain"]: x["feed_cost"] for x in r.rows} == page
+
+
+@pytest.mark.parametrize("df,dt_", FILTERS)
 def test_feeding_page_and_finance_page_cannot_disagree(farm_db, df, dt_):
     """The live defect: the two pages showed different August feed costs (poultry ~35% apart)."""
     finance = {r["domain"]: r["feed_cost"] for r in q.fetch_feed_cost_by_domain(farm_db, df, dt_)}
@@ -67,6 +77,20 @@ def test_parity_fetch_expenses_vs_revenue(farm_db, df, dt_):
     page = q.fetch_expenses_vs_revenue(farm_db, df, dt_)
     assert abs(sum(v for _, v in page["expenses"]) - reg(farm_db, "expenses", start=df, end=dt_).figures["total"]) < 0.005
     assert abs(sum(v for _, v in page["revenue"]) - reg(farm_db, "revenue", start=df, end=dt_).figures["total"]) < 0.005
+
+
+@pytest.mark.parametrize("df,dt_", FILTERS)
+def test_parity_fetch_expenses_vs_revenue_profit(farm_db, df, dt_):
+    """The dashboard never prints the difference, so profit must equal the page's own revenue line minus its expense line."""
+    page = q.fetch_expenses_vs_revenue(farm_db, df, dt_)
+    shown = sum(v for _, v in page["revenue"]) - sum(v for _, v in page["expenses"])
+    assert abs(reg(farm_db, "profit", start=df, end=dt_).figures["profit"] - shown) < 0.01
+
+
+def test_parity_fetch_expense_breakdown_feed_purchases(farm_db):
+    """Feed purchases are the dashboard's 'Feed' expense category (all time, as that chart is unfiltered)."""
+    feed = next(x["total"] for x in q.fetch_expense_breakdown(farm_db) if x["category"] == "Feed")
+    assert reg(farm_db, "feed_purchases").figures["total"] == feed
 
 
 # ----------------------------------------------------------------------------------- receivables
@@ -183,6 +207,15 @@ def test_parity_fetch_breeding_summary(farm_db):
 
 
 # ----------------------------------------------------------------------------------- the registry's own promise
+def test_parity_fetch_data_coverage_batches(farm_db):
+    """The Data Coverage card's batch counts per domain are the registry's 'N batches in total' (the status split is oracle-tested)."""
+    counts = q.fetch_data_coverage(farm_db)["counts"]
+    r = reg(farm_db, "batch_count")
+    by = {x["domain"]: x for x in r.rows}
+    assert (counts["piggery_batches"], counts["poultry_batches"]) == (by["piggery"]["total"], by["poultry"]["total"])
+    assert r.figures["total"] == counts["piggery_batches"] + counts["poultry_batches"]
+
+
 def _declared_hooks():
     return {h for m in REGISTRY.values() for h in m.dashboard}
 

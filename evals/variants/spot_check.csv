@@ -45,7 +45,6 @@ fc11-pa,fc11,paraphrase,,How many kg of feed did we use in August 2026?,What was
 fcr2-pa,fcr2,paraphrase,,Which batch has the best FCR?,Which batch achieved the lowest FCR?,,,
 fcr3-pa,fcr3,paraphrase,,What is the FCR for PIG-B04?,Can you provide the feed conversion ratio for PIG-B04?,,,
 fp01-pa,fp01,paraphrase,,How much feed did we buy in August 2026?,What was the total amount of feed purchased in August 2026?,,,
-fp03-pa,fp03,paraphrase,,How much did we spend buying feed for the pigs?,What was the total expenditure on pig feed?,,,
 fp04-pa,fp04,paraphrase,,Feed purchases for poultry in 2026,Poultry feed buying plans for 2026,,,
 fs01-pa,fs01,paraphrase,,How much feed do we have left?,What is the remaining amount of feed we currently have?,,,
 hc07-pa,hc07,paraphrase,,How many pigs and chickens combined do we have?,What is the total number of pigs and chickens we possess?,,,

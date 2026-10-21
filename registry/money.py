@@ -104,7 +104,7 @@ register(Metric(
     answers="How much was spent buying feed in a period, by domain.",
     does_not_answer="How much feed the animals ate (feed consumed cost).",
     compute=feed_purchases, eval_oracles=("feed_purchases",),
-    parity_exempt="The dashboard shows expense by category, not a feed-purchases figure.",
+    dashboard=("fetch_expense_breakdown",),
 ))
 
 
@@ -221,7 +221,7 @@ register(Metric(
     answers="Profit or loss for the farm or one domain, over a period.",
     does_not_answer="A profit figure when revenue or expenses have no record for the period.",
     compute=profit, eval_oracles=("profit",),
-    parity_exempt="The dashboard charts revenue and expenses as separate lines and never shows their difference.",
+    dashboard=("fetch_expenses_vs_revenue",),
 ))
 
 
@@ -263,7 +263,7 @@ register(Metric(
     answers="Feed cost per pig, per bird, or per animal, over a period.",
     does_not_answer="Total cost per animal including vet, labour and chicks (not defined for launch).",
     compute=feed_cost_per_animal, eval_oracles=("feed_cost_per_animal",),
-    parity_exempt="No dashboard card shows a per-animal figure.",
+    dashboard=("fetch_feed_cost_by_domain",),             # the numerator only; no card shows a per-animal figure (see the parity test)
 ))
 
 

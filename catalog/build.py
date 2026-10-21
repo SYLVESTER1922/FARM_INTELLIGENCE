@@ -34,8 +34,10 @@ def limits_text() -> str:
     """What the bot cannot answer, by class (for "what can't you tell me" and the catalog document)."""
     not_tracked = [u for u in KNOWN if u.kind == "not_tracked"]
     no_metric = [u for u in KNOWN if u.kind == "tracked_no_metric"]
+    policy = [u for u in KNOWN if u.kind == "policy"]
     return ("Not recorded on this farm: " + "; ".join(u.hint for u in not_tracked) + ".\n"
-            "Recorded, but I can't answer questions about it yet: " + "; ".join(u.hint for u in no_metric) + ".")
+            "Recorded, but I can't answer questions about it yet: " + "; ".join(u.hint for u in no_metric) + ".\n"
+            "Not shown, by choice: " + "; ".join(u.hint for u in policy) + ".")
 
 
 def catalog_markdown() -> str:
@@ -51,7 +53,7 @@ def catalog_markdown() -> str:
                     f"- Breakdowns: {', '.join(m.dimensions) if m.dimensions else 'none'}",
                     f"- Zero tolerance for a wrong figure: {'yes' if m.zero_tolerance else 'no'}", ""]
     out += ["## What the bot cannot answer", ""]
-    for kind, heading in (("not_tracked", "Not recorded"), ("tracked_no_metric", "Recorded, but no metric reads it yet"), ("action", "Not allowed")):
+    for kind, heading in (("not_tracked", "Not recorded"), ("tracked_no_metric", "Recorded, but no metric reads it yet"), ("policy", "Not shown, by choice"), ("action", "Not allowed")):
         out += [f"### {heading}", ""]
         for u in (u for u in KNOWN if u.kind == kind):
             out += [f"- **{u.code}** ({u.hint}): {u.text}"]

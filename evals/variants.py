@@ -32,6 +32,13 @@ VARIANTS_JSON = OUT_DIR / "dev_variants.json"
 SPOT_CSV = OUT_DIR / "spot_check.csv"
 SEED = 20261019
 SPOT_FRACTION = 0.20
+# Rewrites whose meaning drifted from the dev question (found by reading the wrong answers of the first untuned run; Sylvester's decision
+# to remove them). They stay out of any regenerated set and out of the loaded one.
+REMOVED = {
+    "fc06-pa": "'spend feeding the chickens' became 'pay for chicken feed' (feed eaten became feed bought)",
+    "fp03-pa": "'spend buying feed for the pigs' became 'total expenditure on pig feed' (lost the word buying; reads as eaten or bought)",
+    "pf06-mx": "'net income' became 'our income' in Ndebele (net became gross)",
+}
 KINDS = ("typo", "paraphrase", "mixed")
 SUFFIX = {"typo": "ty", "paraphrase": "pa", "mixed": "mx"}
 OPENAI_KEY_FILE = Path.home() / ".openai_api_key"
@@ -127,7 +134,8 @@ def generate(model="gpt-4.1", workers=4):
                 for c, kind, text, gen, lang in done]
     # Drop a rewrite that is empty, unchanged, or the model answering/refusing instead of rewriting (e.g. for the prompt-injection case).
     refusal = re.compile(r"^\s*(sorry|i'?m sorry|i can'?t|i cannot|i am unable|as an ai)", re.I)
-    variants = [v for v in variants if v["question"] and v["question"] != v["source_question"] and not refusal.match(v["question"])]
+    variants = [v for v in variants if v["question"] and v["question"] != v["source_question"] and not refusal.match(v["question"])
+                and v["id"] not in REMOVED]
     OUT_DIR.mkdir(exist_ok=True)
     VARIANTS_JSON.write_text(json.dumps(variants, indent=1, ensure_ascii=False))
     spot = spot_check_sample(variants)
@@ -150,7 +158,7 @@ def spot_check_sample(variants, fraction=SPOT_FRACTION, seed=SEED):
 
 
 def load(path=VARIANTS_JSON, kinds=KINDS):
-    return [v for v in json.loads(Path(path).read_text()) if v["kind"] in kinds]
+    return [v for v in json.loads(Path(path).read_text()) if v["kind"] in kinds and v["id"] not in REMOVED]
 
 
 if __name__ == "__main__":
