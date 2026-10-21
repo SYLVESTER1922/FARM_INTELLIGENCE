@@ -4,6 +4,7 @@ CREATE/ALTER raced on a fresh database), and stays compatible with the old engin
 import concurrent.futures as cf
 
 import psycopg
+import pytest
 
 from registry.migrations import MIGRATIONS, migrate
 
@@ -59,3 +60,43 @@ def test_the_advisory_lock_is_released(db_conn, test_dsn):
     with psycopg.connect(test_dsn, autocommit=True) as other:
         assert other.execute("SELECT pg_try_advisory_lock(7204117001)").fetchone()[0] is True
         other.execute("SELECT pg_advisory_unlock(7204117001)")
+
+
+def test_migrate_in_transaction_can_be_limited_to_chosen_migrations_and_is_idempotent(db_conn):
+    import psycopg
+    from registry.migrations import migrate_in_transaction, pending
+    from tests.conftest import TEST_DSN
+    db_conn.close()
+    conn = psycopg.connect(TEST_DSN, autocommit=False)
+    try:
+        conn.execute("DROP SCHEMA public CASCADE")
+        conn.execute("CREATE SCHEMA public")
+        conn.commit()
+        assert [m for m, _ in pending(only=("005_sync_gates", "006_shadow_mode"))] == ["005_sync_gates", "006_shadow_mode"]
+        assert migrate_in_transaction(conn, only=("005_sync_gates", "006_shadow_mode")) == ["005_sync_gates", "006_shadow_mode"]
+        tables = {r[0] for r in conn.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'")}
+        assert tables == {"schema_migrations", "sync_runs", "gate_firings", "gate_acks", "data_snapshot", "shadow_log", "wrong_answer_reports"}
+        assert migrate_in_transaction(conn, only=("005_sync_gates", "006_shadow_mode")) == []
+        assert [m for m, _ in pending({"005_sync_gates"})][-1] == "006_shadow_mode" and len(pending({"005_sync_gates", "006_shadow_mode"})) == 4
+    finally:
+        conn.close()
+
+
+def test_a_failing_statement_rolls_back_the_whole_migration(db_conn, monkeypatch):
+    import psycopg
+    from registry import migrations
+    from tests.conftest import TEST_DSN
+    db_conn.close()
+    monkeypatch.setattr(migrations, "MIGRATIONS", [("901_ok", ["CREATE TABLE zz_one (id INT)"]), ("902_bad", ["CREATE TABLE zz_two (id INT)", "SELECT * FROM no_such_table"])])
+    conn = psycopg.connect(TEST_DSN, autocommit=False)
+    try:
+        conn.execute("DROP SCHEMA public CASCADE")
+        conn.execute("CREATE SCHEMA public")
+        conn.commit()
+        with pytest.raises(psycopg.Error):
+            migrations.migrate_in_transaction(conn)
+        conn.rollback()
+        left = {r[0] for r in conn.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'")}
+        assert left == set()                                          # not even schema_migrations or zz_one survives
+    finally:
+        conn.close()

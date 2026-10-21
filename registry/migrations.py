@@ -179,3 +179,26 @@ def migrate(conn) -> list:
     finally:
         conn.execute("SELECT pg_advisory_unlock(%s)", (_LOCK_KEY,))
     return applied_now
+
+
+def pending(applied=(), only=None):
+    """[(migration id, [sql, ...])] that migrate would run, for a dry run: nothing is executed."""
+    return [(mid, stmts) for mid, stmts in MIGRATIONS if mid not in set(applied) and (only is None or mid in only)]
+
+
+def migrate_in_transaction(conn, only=None) -> list:
+    """Like migrate(), but all-or-nothing and safe behind a transaction pooler (Supabase's port 6543): ONE transaction, a transaction-scoped advisory
+    lock (a session-level lock can be left behind when the pooler hands the connection to another backend), and no autocommit. Any failure rolls
+    back every statement and the schema_migrations rows. `only`: restrict to these migration ids. `conn` must not be in autocommit mode."""
+    applied_now = []
+    with conn.transaction():
+        conn.execute("SELECT pg_advisory_xact_lock(%s)", (_LOCK_KEY,))
+        conn.execute("""CREATE TABLE IF NOT EXISTS schema_migrations (
+                            id TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())""")
+        done = {r[0] for r in conn.execute("SELECT id FROM schema_migrations").fetchall()}
+        for mid, statements in pending(done, only):
+            for sql in statements:
+                conn.execute(sql)
+            conn.execute("INSERT INTO schema_migrations (id) VALUES (%s)", (mid,))
+            applied_now.append(mid)
+    return applied_now
