@@ -28,7 +28,7 @@ from evals.case_specs import SPECS
 from evals.guard import checked_database_url, connect_guarded
 from evals.oracle import EVAL_TODAY
 from evals.run import FARM, build_expectations, load_cases, _fmt_expect
-from evals.score import Observed, combine, score
+from evals.score import Observed, apply_case_rules, combine, score
 from registry.core import WEEKDAYS
 from router import answer_question_v2
 from router.llm import Unavailable, make_client
@@ -115,7 +115,7 @@ def run_model(model, cases, expectations, repeats, workers, pace=0.0, mode=None)
             ans = answer_question_v2(case.question, conn, llm, farm_code=FARM, today=case.today or EVAL_TODAY,
                                      dashboard_filter=case.filter, week_start=week)
             obs = Observed(ans.observed_kind, ans.text)
-            outcome, reason = score(case.kind, expectations[case.id], obs, case.denial_topics)
+            outcome, reason = apply_case_rules(case, *score(case.kind, expectations[case.id], obs, case.denial_topics))
             return case.id, {"rep": rep, "outcome": outcome, "reason": reason, "cause": cause_of(case, ans, outcome, reason),
                              "kind": ans.kind, "code": ans.code, "metric": ans.metric_id, "text": ans.text,
                              "seconds": ans.seconds, "llm_seconds": ans.llm.latency_s if ans.llm else 0.0,
@@ -265,7 +265,6 @@ def main():
     ap.add_argument("--variants", default="", help="run the generated variants in this JSON file instead of the dev questions")
     ap.add_argument("--kinds", default="typo,paraphrase,mixed")
     ap.add_argument("--baseline", default="", help="a tuned dev-run JSON of the same model, to print beside the variants")
-    ap.add_argument("--drafts", action="store_true", help="run the draft cases (evals/cases_dev_drafts.py, not yet reviewed) instead of the dev set")
     ap.add_argument("--no-rebuild", action="store_true")
     ap.add_argument("--wrong", action="store_true", help="print every wrong case")
     args = ap.parse_args()
@@ -274,9 +273,6 @@ def main():
     load_openai_key()
     cases = load_cases(include_locked=False)                    # dev only; a locked case is refused
     kind_of = source_of = None
-    if args.drafts:
-        from evals.cases_dev_drafts import DRAFTS
-        cases = list(DRAFTS)
     if args.variants:
         from evals import variants as V
         from evals.case_specs import SPECS as _SPECS
@@ -309,7 +305,7 @@ def main():
             continue
         s = summarise(results)
         summaries[model] = s
-        label = "variants-" if args.variants else ("drafts-" if args.drafts else "")
+        label = "variants-" if args.variants else ""
         extra = {}
         if args.variants:
             baseline = json.loads(Path(args.baseline).read_text()) if args.baseline else None

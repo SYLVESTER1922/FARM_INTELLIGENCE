@@ -155,3 +155,12 @@ def test_denial_pattern_stops_at_but():
     t = ("customers",)
     assert not denies_topic("This farm does not track accounts payable, but it does track revenue owed by customers.", t)
     assert denies_topic("This farm does not track unpaid invoices from customers.", t)
+
+
+def test_a_clarification_is_correct_only_for_cases_that_accept_it():
+    from evals.cases import Case
+    from evals.score import apply_case_rules
+    base = dict(id="x", question="q", kind="refuse", oracle=("refuse", {}), group="refusal")
+    assert apply_case_rules(Case(**base, accept_clarify=True), "clarified", "")[0] == "correct"
+    assert apply_case_rules(Case(**base), "clarified", "")[0] == "clarified"
+    assert apply_case_rules(Case(**base, accept_clarify=True), "wrong", "x")[0] == "wrong"

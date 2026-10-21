@@ -26,7 +26,7 @@ from pathlib import Path
 from evals import build_fixture
 from evals.guard import checked_database_url, connect_guarded
 from evals.oracle import Oracle
-from evals.score import Observed, combine, is_raw_dump, score
+from evals.score import apply_case_rules, Observed, combine, is_raw_dump, score
 
 REPO = Path(__file__).resolve().parent.parent
 FARM = build_fixture.FARM_CODE
@@ -173,7 +173,7 @@ def main():
             extra = {"intent_source": ans.intent_source, "tool": ans.tool_name, "query_id": ans.query_id}
         except Exception as e:
             obs, extra = Observed("error", f"{type(e).__name__}: {e}"), {}
-        outcome, reason = score(case.kind, expectations[case.id], obs, case.denial_topics)
+        outcome, reason = apply_case_rules(case, *score(case.kind, expectations[case.id], obs, case.denial_topics))
         return case.id, {"rep": rep, "outcome": outcome, "reason": reason, "observed": obs.kind,
                          "text": obs.text, "secs": round(time.time() - t0, 2), **extra}
 

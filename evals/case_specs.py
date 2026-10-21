@@ -112,6 +112,9 @@ SPECS = {
 
 # Questions the resolver must REFUSE by name rather than answer one side of: a comparison of two periods.
 # case id -> (registry metric the router would pick, resolver code that must come back)
+from evals.cases_dev_round2 import ROUND2_SPECS      # noqa: E402  approved additions (plan 25.2)
+SPECS.update(ROUND2_SPECS)
+
 REFUSAL_SPECS = {
     "cmp01": ("feed_consumed_cost", "comparison_not_supported"),
     "cmp02": ("feed_consumed_cost", "comparison_not_supported"),

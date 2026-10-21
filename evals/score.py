@@ -198,3 +198,10 @@ def combine(outcomes: list):
         if sev in runs:
             return sev, next(r for o, r in outcomes if o == sev), True
     return runs[0], "", flaky
+
+
+def apply_case_rules(case, outcome, reason):
+    """Reviewer decisions that widen what counts as correct for one case: a clarification is accepted for `accept_clarify` cases."""
+    if getattr(case, "accept_clarify", False) and outcome == "clarified":
+        return "correct", "accepted_clarification"
+    return outcome, reason

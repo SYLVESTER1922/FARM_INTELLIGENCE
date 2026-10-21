@@ -1,16 +1,19 @@
 """
-DRAFT dev cases written to reach the minimums Sylvester set (plan section 24.1): 8 per zero-tolerance metric (money, headcount), 4 per
-other metric, 5 per new refusal class. They are NOT part of evals.cases_dev.CASES and the harness does not run them by default: they stay
-dev-only until Sylvester reviews them, then move into cases_dev.py / case_specs.py. Expected figures come from the independent oracle,
-as for every other case. Nothing here is locked, and none was written to fit a model's answers: the questions were written before
-the router was run on them.
-
-    python -m evals.cases_dev_drafts          # print the review sheet
+Dev cases added to reach the minimums Sylvester set (plan section 25.2): 8 per zero-tolerance metric (money, headcount), 4 per other metric,
+5 per refusal class that is new in step 6. Drafted 2026-10-20, APPROVED by Sylvester the same day (dca05: the "Feed cost per animal" label
+is a valid answer; dfo04: a clarification is accepted as well as the refusal). They are appended to evals.cases_dev.CASES and their gold specs
+to evals.case_specs.SPECS. Expected figures come from the independent oracle. The questions were written before the router was run on them.
+All `split="dev"`; nothing here is locked.
 """
 
+import datetime as dt
+
 from evals.cases import Case
-from evals.cases_dev import APR, AUG, JUN, MAR, SEP, Q2
+from evals.oracle import month_bounds as M
 from registry import Scope
+
+APR, AUG, JUN, MAR, SEP = M(2026, 4), M(2026, 8), M(2026, 6), M(2026, 3), M(2026, 9)
+Q2 = (dt.date(2026, 4, 1), dt.date(2026, 6, 30))
 
 C = Case
 P, C_ = ("piggery",), ("poultry",)
@@ -24,10 +27,10 @@ _NOT_DENIED_STAFF = [r"(?:isn't|aren't|not|n't)\s+(?:recorded|tracked|logged)[^.
 _NOT_DENIED_CROPS = [r"(?:isn't|aren't|not|n't)\s+(?:recorded|tracked|logged)[^.]{0,60}\b(?:scout\w*|pests?|crops?|fields?)\b"]
 _NOT_DENIED_FIELDS = [r"(?:isn't|aren't|not|n't)\s+(?:recorded|tracked|logged)[^.]{0,60}\b(?:irrigat\w*|spray\w*|operations?|fields?)\b"]
 
-DRAFTS = [
+ROUND2 = [
     # ------------------------------------------------------------ feed purchases (6 -> 8)
     C("dfp01", "Show me the feed purchases for poultry in March 2026", "answer",
-      ("feed_purchases", dict(domain="poultry", start=MAR[0], end=MAR[1])), "money", "v2_only", source="draft", review="domain + month"),
+      ("feed_purchases", dict(domain="poultry", start=MAR[0], end=MAR[1])), "money", "v2_only", review="domain + month"),
     C("dfp02", "How much was spent on feed purchases in Q2 2026?", "answer",
       ("feed_purchases", dict(start=Q2[0], end=Q2[1])), "money", "v2_only", review="quarter wording"),
     # ------------------------------------------------------------ profit (6 -> 8)
@@ -44,9 +47,8 @@ DRAFTS = [
       review="'per head' and 'broilers' wording"),
     C("dca04", "What was the feed cost per animal last month?", "answer", ("feed_cost_per_animal", dict(start=SEP[0], end=SEP[1])), "money",
       "v2_only", review="calendar last month; data stops 15 Sep"),
-    C("dca05", "How much does each animal cost us?", "clarify",
-      ("clarify", dict(note="total cost per animal is not defined; only feed cost per animal is. The bot must ask or offer feed cost per animal, not invent a total")),
-      "clarify", "v2_only", zt=True, review="the refuse/clarify path for this metric"),
+    C("dca05", "How much does each animal cost us?", "answer", ("feed_cost_per_animal", {}), "money", "v2_only",
+      review="Approved: the answer labelled 'Feed cost per animal' is valid (total cost per animal is not defined; the label says what is shown)"),
     # ------------------------------------------------------------ labour (6 -> 8)
     C("dlb01", "Total hours worked in the piggery in September 2026", "answer",
       ("labour", dict(domain="piggery", measure="hours", start=SEP[0], end=SEP[1])), "money", "v2_only"),
@@ -91,15 +93,16 @@ DRAFTS = [
     C("dfo01", "When was the maize last irrigated?", "refuse", ("refuse", dict(note="field operations are recorded but no metric reads them", not_claims=_NOT_DENIED_FIELDS)), "refusal", "v2_only"),
     C("dfo02", "How many machine hours were used on the tomatoes?", "refuse", ("refuse", dict(note="field operations are recorded but no metric reads them", not_claims=_NOT_DENIED_FIELDS)), "refusal", "v2_only"),
     C("dfo03", "Which fields were sprayed last month?", "refuse", ("refuse", dict(note="field operations are recorded but no metric reads them", not_claims=_NOT_DENIED_FIELDS)), "refusal", "v2_only"),
-    C("dfo04", "When did we last apply fertiliser to the maize?", "refuse", ("refuse", dict(note="field operations are recorded but no metric reads them", not_claims=_NOT_DENIED_FIELDS)), "refusal", "v2_only"),
+    C("dfo04", "When did we last apply fertiliser to the maize?", "refuse", ("refuse", dict(note="field operations are recorded but no metric reads them", not_claims=_NOT_DENIED_FIELDS)), "refusal", "v2_only",
+      accept_clarify=True, review="Approved: a clarification (fertiliser spend or field operations?) is accepted as well as the refusal"),
     C("dfo05", "What chemicals were applied to the wheat?", "refuse", ("refuse", dict(note="field operations are recorded but no metric reads them", not_claims=_NOT_DENIED_FIELDS)), "refusal", "v2_only"),
 ]
 
-DRAFT_SPECS = {
+ROUND2_SPECS = {
     "dfp01": S("feed_purchases", domains=C_, start=MAR[0], end=MAR[1]), "dfp02": S("feed_purchases", start=Q2[0], end=Q2[1]),
     "dpf01": S("profit", start=MAR[0], end=MAR[1]), "dpf02": S("profit", domains=C_, start=JUN[0], end=JUN[1]),
     "dca01": S("feed_cost_per_animal", domains=P, start=AUG[0], end=AUG[1]), "dca02": S("feed_cost_per_animal", domains=C_, start=MAR[0], end=MAR[1]),
-    "dca03": S("feed_cost_per_animal", domains=C_), "dca04": S("feed_cost_per_animal", start=SEP[0], end=SEP[1]),
+    "dca03": S("feed_cost_per_animal", domains=C_), "dca04": S("feed_cost_per_animal", start=SEP[0], end=SEP[1]), "dca05": S("feed_cost_per_animal"),
     "dlb01": S("labour", domains=P, start=SEP[0], end=SEP[1]), "dlb02": S("labour", start=JUN[0], end=JUN[1]),
     "dbc01": S("batch_count", domains=C_), "dbc02": S("batch_count", domains=P),
     "dsw01": S("sow_count"), "dsw02": S("sow_count"), "dsw03": S("sow_count"), "dsw04": S("sow_count"),
@@ -108,18 +111,9 @@ DRAFT_SPECS = {
 }
 
 REFUSAL_CLASS = {"dst": "staff_info", "dsp": "staff_pay", "dsc": "crop_scouting", "dfo": "field_operations"}
-for _c in DRAFTS:
+for _c in ROUND2:
     _c.refusal = REFUSAL_CLASS.get(_c.id[:3], "") if _c.kind == "refuse" else ""
-IDS = [c.id for c in DRAFTS]
+IDS = [c.id for c in ROUND2]
 assert len(IDS) == len(set(IDS))
 
 
-def main():
-    print("| id | metric / class | kind | question | expected |\n|---|---|---|---|---|")
-    for c in DRAFTS:
-        what = DRAFT_SPECS[c.id][0] if c.id in DRAFT_SPECS else REFUSAL_CLASS.get(c.id[:3], c.group)
-        print(f"| {c.id} | {what} | {c.kind} | {c.question} | {c.oracle[0]} {c.oracle[1] if c.oracle[1] else ''} |")
-
-
-if __name__ == "__main__":
-    main()

@@ -212,7 +212,7 @@ The eight live failures; one case for each of the five period rules; clarificati
 
 ## 12. Gates
 
-### Gate A: internal ready (start shadow mode)
+### Gate A: internal ready (start shadow mode) - MET 2026-10-20 (section 25.8)
 
 - Every launch metric has a definition, template, parity test and eval cases.
 - All scope-resolver unit tests pass; the field-rendering test passes.
@@ -695,19 +695,18 @@ dev run was discarded because 512 of its calls failed on this, so **there is no 
 Cost control from here: no paid run without Sylvester's go-ahead and a stated estimate (gpt-4.1 about $0.0066 per question; a full dev run of
 176 cases x 3 repeats is about $3.50, the 43 drafts about $0.85).
 
-### 25.8 Gate A, item by item (judged 2026-10-20)
+### 25.8 Gate A, item by item: FINAL (2026-10-20): MET
 
-| Item | Status | Basis |
+| Item | Result | Basis |
 |---|---|---|
 | Definition, template: every metric | **Pass** | 21 of 21 each |
-| Parity test: every metric | **Pass once 5 exemptions are approved** | 16 of 21 have a parity test; labour, sow count, feed stock, market readiness and weather have no dashboard counterpart (25.1) |
-| Eval cases: N per metric | **Cannot pass until Sylvester approves the 43 drafts** | approved cases meet N for 11 of 21 metrics; with the drafts 21 of 21 and 4 of 4 refusal classes |
-| Resolver and rendering tests | **Pass** | full suite passes; resolver and render line coverage 100% |
-| Dev wrong rate at most 2% | **Pass on the current 176 (tuned); to be re-judged on 219 with the drafts** | gpt-4.1, prompt v6: 171 of 176 correct, 0 wrong, 0 refused, 2.8% clarified, $0.0066 per question. On the 43 drafts, untuned: 1 wrong (2.3%), for Sylvester to judge |
-| Model chosen by bake-off and pinned | **Met (waived comparison), 2026-10-20** | gpt-4.1 with prompt v6, `json_schema` mode, pinned. Sylvester waived the Claude comparison because of Anthropic cost; revisit only if quality or pricing changes. No Anthropic call was made. The pin is still confirmed on the locked set later |
+| Parity test: every metric | **Pass** | 16 of 21 have a parity test; labour, sow count, feed stock, market readiness and weather are exempt, **approved by Sylvester 2026-10-20** (no dashboard counterpart; oracle-checked) |
+| Eval cases: N per metric | **Pass** | 21 of 21 metrics at or above N (8 zero-tolerance, 4 other) and 4 of 4 new refusal classes at 5, after Sylvester approved the 43 drafts (dca05: the "Feed cost per animal" label counts as a valid answer; dfo04: a clarification is accepted as well as the refusal). Dev set is now 219 cases |
+| Resolver and rendering tests | **Pass** | 1576 new-path tests pass; resolver and render line coverage 100% |
+| Dev wrong rate at most 2% | **Pass (0 of 219), tuned** | gpt-4.1, prompt v6, 1 repeat. Tuned against, so not an estimate of the held-out rate |
+| Model chosen and pinned | **Pass (comparison waived)** | gpt-4.1 + prompt v6, `json_schema` mode; Claude comparison waived for Anthropic cost; revisit only if quality or pricing changes |
 
-**Gate A can be judged once two inputs arrive:** approval or edits of the 43 drafts, and sign-off of the 5 remaining parity exemptions, then the
-final run over 219 cases.
+Gate A permits starting shadow mode (step 8). It makes no claim about unseen questions; that is Gate C.
 
 ### 25.9 The test suite spends OpenAI credit
 
@@ -718,4 +717,25 @@ final run over 219 cases.
 `render`, `catalog`, `evals`) use no key. Until the old engine is deleted (step 9) run the new-path tests with
 `python -m pytest tests -q --ignore-glob='tests/test_chatbot*' --ignore=tests/test_ui_app.py` when a quick, free check is wanted. Nothing in the old
 engine or its tests was changed.
+
+### 25.10 Final dev run: prompt v6 against prompt v5, same 219 cases (gpt-4.1, 1 repeat, `json_schema`)
+
+Cost about $2.90 of the $4 cap (438 calls at $0.0066). v5 was run from a temporary git worktree at `dfdd7af` with the current cases, so it also lacks
+the staff-pay code guard: the comparison is of the two versions of prompt plus code, not of the prompt alone. One repeat, so a case that flips between
+runs counts once (rc07 changed from a question to an answer with no change that touches it: noise).
+
+| | Correct | Wrong | Refused | Clarified | Wrong, money + headcount | Cost per question | Median latency |
+|---|---|---|---|---|---|---|---|
+| v5 | 207 (94.5%) | 0 | 0 | 12 (5.5%) | 0 of 135 | $0.00659 | 0.71 s |
+| v6 | 213 (97.3%) | 0 | 0 | 6 (2.7%) | 0 of 135 | $0.00663 | 0.71 s |
+
+v6 clarifies less because the five per-person-pay and staff questions that v5 turned into "do you mean labour or payroll history?" now get the
+named answer. The remaining six clarifications are the same in both: "to date" (ex01), three domain over-asks (ex12 "day-old chicks", ca01 "per pig",
+dca01 "per pig in August 2026"), "vet care" category (he02) and "any pigs being treated for illness" (he06). The domain over-asks are the one
+usefulness gap: the question names the section and the bot still asks (the cross-check sees a domain word the model did not return and asks, as designed).
+
+Result per metric (correct / wrong / clarified / refused, v5 then v6; zero wrong everywhere): feed consumed cost 29/0/0/0 both; feed purchases 8 both;
+expenses 18 + 2 clarified both; revenue 8; profit 8; feed cost per animal 6 + 2 clarified both; receivables 7 + 1 clarified (v5), 8 (v6); labour 8;
+active headcount 12; batch count 8; mortality 10; sow count 8; FCR 4; weight 4; harvest yield 4; breeding 5; crop plantings 4; feed stock 4; market
+readiness 4; health events 4 + 2 clarified both; weather 4; refusals and clarify cases with no metric (45): 40 + 5 clarified (v5), 45 (v6).
 

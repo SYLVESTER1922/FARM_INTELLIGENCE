@@ -318,5 +318,8 @@ CASES = [
     C("nz08", "feed cost piggery aug 2026", "answer", ("feed_cost", dict(domain="piggery", start=AUG[0], end=AUG[1])), "noisy", zt=True),
 ]
 
+from evals.cases_dev_round2 import ROUND2          # noqa: E402  approved additions (plan 25.2); defined apart because they build their own month constants
+CASES += ROUND2
+
 IDS = [c.id for c in CASES]
 assert len(IDS) == len(set(IDS)), "duplicate case ids"

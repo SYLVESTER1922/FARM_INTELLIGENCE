@@ -28,6 +28,7 @@ class Case:
     week_start: str = None         # the farm's first weekday for this case (default monday)
     split: str = "dev"
     review: str = ""               # what the reviewer should check about this case
+    accept_clarify: bool = False   # a refuse case for which a clarifying question is also a correct outcome (reviewer decision)
     refusal: str = ""              # refuse cases: the catalog refusal class the question belongs to (catalog.untracked code)
 
     def __post_init__(self):
