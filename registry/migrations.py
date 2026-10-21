@@ -63,6 +63,55 @@ MIGRATIONS = [
            )""",
         "CREATE INDEX IF NOT EXISTS llm_quota_log_day ON llm_quota_log (day)",
     ]),
+    ("005_sync_gates", [
+        # One row per gated sync attempt (gates/run.py). `outcome`: passed | passed_with_warnings | blocked | error.
+        """CREATE TABLE IF NOT EXISTS sync_runs (
+               id SERIAL PRIMARY KEY,
+               started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+               finished_at TIMESTAMPTZ,
+               farm_code TEXT NOT NULL,
+               outcome TEXT NOT NULL,
+               data_through DATE,
+               rows_written JSONB,
+               detail TEXT,
+               notified BOOLEAN NOT NULL DEFAULT false,
+               notify_error TEXT
+           )""",
+        # Every gate firing, kept for false-positive measurement. `status`: open | acknowledged | resolved (resolved = a later run no longer fired it).
+        """CREATE TABLE IF NOT EXISTS gate_firings (
+               id SERIAL PRIMARY KEY,
+               fired_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+               run_id INTEGER REFERENCES sync_runs(id),
+               farm_code TEXT NOT NULL,
+               gate TEXT NOT NULL,
+               severity TEXT NOT NULL,
+               tbl TEXT,
+               message TEXT NOT NULL,
+               rows_affected INTEGER NOT NULL DEFAULT 0,
+               period_start DATE,
+               period_end DATE,
+               key TEXT NOT NULL,
+               status TEXT NOT NULL DEFAULT 'open',
+               went_live BOOLEAN NOT NULL DEFAULT false
+           )""",
+        "CREATE INDEX IF NOT EXISTS gate_firings_open ON gate_firings (farm_code, status, severity)",
+        # Who acknowledged a warning, why, and when. Blocks are never acknowledged; the next passing run clears them.
+        """CREATE TABLE IF NOT EXISTS gate_acks (
+               id SERIAL PRIMARY KEY,
+               firing_id INTEGER NOT NULL REFERENCES gate_firings(id),
+               reviewer TEXT NOT NULL,
+               reason TEXT NOT NULL,
+               acked_at TIMESTAMPTZ NOT NULL DEFAULT now()
+           )""",
+        # The last snapshot that passed the gates: what is live, when it was verified, and whether a newer upload is held back.
+        """CREATE TABLE IF NOT EXISTS data_snapshot (
+               farm_code TEXT PRIMARY KEY,
+               verified_at TIMESTAMPTZ NOT NULL,
+               data_through DATE,
+               held_back BOOLEAN NOT NULL DEFAULT false,
+               held_since TIMESTAMPTZ
+           )""",
+    ]),
 ]
 
 

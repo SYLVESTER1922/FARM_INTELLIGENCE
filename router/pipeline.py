@@ -202,6 +202,18 @@ def _remember(session, q, llm_res, spec, code, options, values, memory_key=None)
                               "memory_key": memory_key}
 
 
+def _with_gate_notes(conn, farm_code, metric_id, scope, text):
+    """The sync gates' banner (a newer upload is held back) above the answer, and a caveat line under it for each live, unacknowledged warning
+    that affects this metric (plan section 9). With no gate log tables, or on any failure, the answer is unchanged: a gate problem never costs an answer."""
+    try:
+        from gates import status
+        banner = status.banner(conn, farm_code)
+        notes = status.caveats(conn, farm_code, metric_id, scope)
+    except Exception:
+        return text
+    return "\n".join(([banner] if banner else []) + [text] + notes)
+
+
 def _continue(q, conn, llm_res, spec, farm_code, today, dashboard_filter, week_start, session, choice=None):
     """Everything after the spec exists. `choice` is (clarification code, the value the user picked) when this is the reply to a
     clarifying question; that one disagreement is settled by the user, every other check still runs."""
@@ -314,5 +326,6 @@ def _continue(q, conn, llm_res, spec, farm_code, today, dashboard_filter, week_s
     result = compute(spec.metric, conn, scope)
     allt = compute(spec.metric, conn, all_time_scope(scope)) if res.offer_all_time_hint else None
     ctx = RenderContext(currency=currency, data_through=latest_log_date(conn), all_time_result=allt)
-    return V2Answer(text=render(res, result, ctx), kind="answer", code=result.status, metric_id=spec.metric, scope=scope,
+    text = _with_gate_notes(conn, farm_code, spec.metric, scope, render(res, result, ctx))
+    return V2Answer(text=text, kind="answer", code=result.status, metric_id=spec.metric, scope=scope,
                     spec=spec, llm=llm_res)

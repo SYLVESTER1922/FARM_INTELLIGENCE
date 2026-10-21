@@ -82,6 +82,14 @@ def _do_sync():
     caption and always stamps last_synced_at (even on failure) so a
     persistently-failing Sheet doesn't retry on every single request."""
     try:
+        if os.environ.get("GATED_SYNC") == "1":
+            # Plan section 9: stage, run the gates, swap only on a pass. Off by default until the cutover (step 9).
+            from gates.run import gated_sync_sheet
+            result = gated_sync_sheet(
+                os.environ["FARM_INTELLIGENCE_SHEET_ID"], FARM_CODE,
+                os.environ["FARM_INTELLIGENCE_DB_DSN"], os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"])
+            _sync_state["last_error"] = None if result.went_live else f"upload {result.outcome}: {result.detail}"[:200]
+            return
         sync_sheet_to_supabase(
             os.environ["FARM_INTELLIGENCE_SHEET_ID"],
             FARM_CODE,
@@ -114,9 +122,24 @@ def sync_status_text() -> str:
         return "*Data not yet synced from Google Sheets this session.*"
     age_s = int(time.time() - _sync_state["last_synced_at"])
     when = f"{age_s}s ago" if age_s < 120 else f"{age_s // 60}m ago"
+    banner = _gate_banner()
     if _sync_state["last_error"]:
-        return f"*⚠️ Last sync attempt ({when}) failed: {_sync_state['last_error']} - showing last-known data.*"
-    return f"*✅ Synced from Google Sheets {when}.*"
+        return banner + f"*⚠️ Last sync attempt ({when}) failed: {_sync_state['last_error']} - showing last-known data.*"
+    return banner + f"*✅ Synced from Google Sheets {when}.*"
+
+
+def _gate_banner() -> str:
+    """With GATED_SYNC on: the sync gates' banner ("Data last verified <date>. A newer upload is being reviewed.") above the sync status. Never raises."""
+    if os.environ.get("GATED_SYNC") != "1":
+        return ""
+    try:
+        import psycopg
+        from gates.status import banner
+        with psycopg.connect(os.environ["FARM_INTELLIGENCE_DB_DSN"], autocommit=True, prepare_threshold=None) as c:
+            text = banner(c, FARM_CODE)
+        return f"**{text}**\n\n" if text else ""
+    except Exception:
+        return ""
 
 
 # ---------------------------------------------------------------------------

@@ -17,7 +17,7 @@ def sync_workbook_to_supabase(filepath: str, farm_code: str, dsn: str) -> SyncRe
     return _sync_from_workbook(wb, farm_code, dsn)
 
 
-def _sync_from_workbook(wb, farm_code: str, dsn: str) -> SyncReport:
+def _sync_from_workbook(wb, farm_code: str, dsn: str, conn=None) -> SyncReport:
     """The actual sync logic, decoupled from *how* `wb` was loaded - an
     openpyxl Workbook (sync_workbook_to_supabase, above) or a
     sync.sheets_io.SheetsWorkbook (sync_sheet_to_supabase, below) both
@@ -30,7 +30,9 @@ def _sync_from_workbook(wb, farm_code: str, dsn: str) -> SyncReport:
     # different backend connection; a statement prepared on one backend
     # doesn't exist on the next, surfacing as a real
     # 'prepared statement "_pg3_N" does not exist' error mid-sync.
-    conn = psycopg.connect(dsn, autocommit=True, prepare_threshold=None)
+    own_conn = conn is None            # gates/run.py passes its own connection: one transaction into the staging schema
+    if own_conn:
+        conn = psycopg.connect(dsn, autocommit=True, prepare_threshold=None)
     report = SyncReport()
 
     lists = read_list_values(wb["99_LISTS"]) if "99_LISTS" in wb.sheetnames else {}
@@ -92,7 +94,8 @@ def _sync_from_workbook(wb, farm_code: str, dsn: str) -> SyncReport:
     if "07_HEALTH_LOG" in wb.sheetnames:
         report.rows_written["health_log"] = _sync_health_log(wb, conn, report.errors)
 
-    conn.close()
+    if own_conn:
+        conn.close()
     return report
 
 

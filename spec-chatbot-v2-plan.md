@@ -422,7 +422,7 @@ outside the timed section); the first two gpt-4.1 attempts were discarded becaus
 | Step | Scope | Lets us measure |
 |---|---|---|
 | 6 Capability catalog and refusals | Generate the catalog and the "what I can answer" help from the registry; keep the small hand-written "known untracked" list; retire `explain_gap` and `DATA_DICTIONARY` once the new path replaces them. | False "we don't track that" rate; refusal rate. |
-| 7 Sync gates | Staging copy and swap-on-pass, block and warn gates, last-good snapshot with banner and staleness, email on a block, acknowledgement and firing logs, dirty-data fixtures. | Gate false-positive rate; wrong rate on the dirty fixtures. |
+| 7 Sync gates (built, section 26) | Staging copy and swap-on-pass, block and warn gates, last-good snapshot with banner and staleness, email on a block, acknowledgement and firing logs, dirty-data fixtures. | Gate false-positive rate; wrong rate on the dirty fixtures. |
 | 8 Shadow mode | The new engine runs beside the old one behind a flag, logging to a separate table; disagreement report; "report wrong answer" button; `query_log` sampling. | Questions the written set missed. |
 | 9 Per-group cutover | Headcount, then money, then the rest; each only when eval and shadow results pass; manual Render deploys, verified live. `grounding.py` and the old engine stay until the end of this step. | Live wrong rate per group. |
 | 10 Gate B pilot | The client uses it: held-out run (zero wrong in at least 200 independent money and headcount questions), sync gates and the data-quality report live. | Pilot traffic evidence. |
@@ -752,3 +752,63 @@ Full dev run after the fix (gpt-4.1, prompt v6, 219 cases, 1 repeat, about $1.45
 135 money and headcount. Against the run before the fix: `ex12`, `ca01`, `dca01` went from a question to a correct answer; `rc07` went the other way
 (answer to question) and `mo09` changed wording. Neither is caused by the fix: `rc07` has flipped between runs (v5 asked, the first v6 run answered,
 this run asked) and `mo09` is the model choosing whether to add a per-batch breakdown. All nine cases that should clarify still do.
+
+## 26. Step 7: sync gates (built 2026-10-20, nothing deployed)
+
+**What exists** (package `gates/`; migration `005_sync_gates`; the old engine and `grounding.py` untouched; no paid call, no push, no deploy):
+
+- **Staging and swap (`gates/run.py`).** `gated_sync_workbook` / `gated_sync_sheet` load the upload into a `staging` schema inside one transaction, using
+  the existing sync code unchanged (it gained an optional `conn` argument), run the gates on that copy, and then either replace the live tables or roll back.
+  A rollback leaves the live tables exactly as they were, which is the "last good snapshot". The result, every firing and the snapshot state are logged on a
+  separate connection. It never raises; a load that cannot finish is an `error` outcome with the live tables untouched, and also emails.
+- **Gates (`gates/checks.py`).** Block: missing or invalid currency (ISO 4217 list), mixed currency (a different currency named in expense, revenue or labour
+  text), units outside the workbook's own lists (`UNIT_GENERAL`, `UNIT_SALES`, `UNIT_FIELD`), duplicate primary keys (an insert that conflicts with an
+  earlier row of the same upload). Warn: a month with no rows, a 10x jump or drop in an expense category between consecutive months, rows the sync rejected,
+  and a value outside its `99_LISTS` list that the sync does not itself reject (a typo'd expense category). Report only: feed reconciliation, per farm tolerance
+  from `farm_settings`; it never produces a banner or a caveat.
+- **Last good snapshot, banner, staleness (`gates/status.py`).** After a block the chat and the dashboard status line show "Data last verified <date>. A newer
+  upload is being reviewed."; once the verified snapshot is more than 7 days old it becomes "⚠️ Data last verified <date> (N days ago). A newer upload is
+  still being reviewed, so these figures may be out of date." A passing upload clears it. Every answer already says "Data through <date>".
+- **Caveats.** A live, unacknowledged warning adds "Note: <what is wrong> (data-quality warning, not yet reviewed)" under answers for the metrics that read the
+  affected table (derived from each metric's `sources`), and only for answers whose period overlaps the warning's period. Report-only items add nothing.
+- **Logs.** `sync_runs` (outcome, rows, whether the email went), `gate_firings` (gate, severity, farm, table, rows affected, period, status open /
+  acknowledged / superseded / resolved, went live), `gate_acks` (reviewer, reason, time), `data_snapshot`. `store.acknowledge` accepts warnings only (never a block
+  or a report item), needs a reviewer and a reason, can be limited to named reviewers (Netrisyl during the pilot), and an acknowledged issue stays acknowledged
+  when the next upload shows it again. `status.data_quality_report` lists it all.
+- **Email on a block** reuses the `ALERT_*` settings; each block (and each failed load) emails; a failure to send is recorded in `sync_runs`.
+- **Dirty-data fixtures (`gates/fixtures.py`).** Nine defects injected into a fresh copy of the real workbook, plus an unmodified control: invalid currency,
+  blank currency, four April expenses noted in ZWL, an expense in grams, a duplicated May expense row, two expenses with category "Feeed", all May expenses
+  missing, July feed expenses 12x June's, February inventory use triple the daily logs.
+- **Wiring.** The chat adds the banner and caveats (and does nothing if the gate tables do not exist). The Gradio app uses the gated sync only when
+  `GATED_SYNC=1`; the default is the old direct sync, so nothing changes until the cutover.
+
+**Results (`python -m evals.dirty_report`, no model calls):**
+
+| Measure | Result |
+|---|---|
+| Gate false positives on the clean workbook | **0 blocks, 0 warnings**; 15 report-only reconciliation items (see below) |
+| Dirty fixtures caught by the gate built for them | **9 of 9** (5 block, 3 warn, 1 report-only); the control fires nothing |
+| Blocked uploads that changed the live data | 0 of 5 |
+| Answers that changed with no banner or caveat (10 fixtures x 173 gold-spec dev questions = 1,730 answers) | **0 silent-wrong** (0 of the 134 zero-tolerance questions per fixture); 39 answers changed and were all caveated |
+
+Tests: 39 for the gates end to end (`tests/test_gates_dirty.py`, `tests/test_gates_checks.py`) and one that runs all fixtures and fails on any silent change
+(`tests/test_gates_silent_wrong.py`). The new-path suite is 1,622 passing.
+
+**Design choices to confirm (Sylvester):**
+
+1. **Replace, not merge.** The live tables are now replaced from staging, so a row deleted from the sheet disappears from the app. The old sync only upserted and
+   kept deleted rows. This is the behaviour the dashboard's docstring already assumed.
+2. **Two warnings beyond the plan's table:** "rows the sync rejected" and "value outside its list". Both are missing or mislabelled money, so they carry caveats; say
+   if either should block.
+3. **Month-without-rows is batch-aware for the daily logs.** A month in which no batch was on the farm is not a gap (the clean workbook has four such poultry months and
+   a plain check warned on all four). Months inside a batch's span with no log rows do warn. Other tables use first month to last month.
+4. **A failed load is an `error`, not a hold-back.** It emails but shows no banner, because "a newer upload is being reviewed" would not be true. If errors repeat,
+   the snapshot gets old silently; say if repeated errors should also show the stale banner.
+5. **Reconciliation at the default 5% flags 15 months of the clean synthetic workbook** (the daily logs and the inventory sheet were generated separately). It is
+   report-only as planned; the tolerance is a guess until the first month of real data.
+
+**Not done, and risks:** (a) the Google Sheets path (`gated_sync_sheet`) is a thin wrapper and was not run against a real Sheet; (b) the single-transaction load
+with `SET LOCAL search_path` is written for Supabase's transaction pooler but not tested there; (c) more fixtures would help (text in number cells, a missing tab,
+dates in the wrong format); (d) the gate false-positive rate is measured on one clean workbook, so it is an upper-bound check, not a rate.
+**User actions:** call `registry.migrations.migrate` once at app start (creates the four tables); set the `ALERT_*` variables where the app runs; set `GATED_SYNC=1`
+only at the cutover (step 9). Nothing was pushed or deployed.
