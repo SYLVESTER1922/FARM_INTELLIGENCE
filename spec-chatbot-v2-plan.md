@@ -853,7 +853,7 @@ verified live. Not tested here: the background pool inside the real Gradio proce
 
 ### 27.1 Supabase migration for steps 7 and 8 (run 2026-10-20)
 
-Migrations `005_sync_gates` and `006_shadow_mode` were applied to the production Supabase database (pooler `aws-0-us-west-2.pooler.supabase.com:6543`, database
+Migrations `005_sync_gates` and `006_shadow_mode` were applied to the production Supabase database (Sylvester confirmed it is the database Render uses; pooler `aws-0-us-west-2.pooler.supabase.com:6543`, database
 `postgres`) with `registry.migrations.migrate_in_transaction(only=...)`: one transaction, a transaction-scoped lock, create-only SQL. Migrations 001 to 004 were NOT applied
 (they would add columns to `query_log` and create `farm_settings` and `llm_quota_log`; nothing in steps 7 and 8 needs them yet). Verified afterwards: the seven new tables exist
 (`schema_migrations`, `sync_runs`, `gate_firings`, `gate_acks`, `data_snapshot`, `shadow_log`, `wrong_answer_reports`), and the row count of each of the 23 existing tables is unchanged
