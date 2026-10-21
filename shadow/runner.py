@@ -48,12 +48,14 @@ def run_shadow(dsn, farm_code, question, old, *, date_from=None, date_to=None, l
     try:
         rate, daily = _limits(env)
         if (rng or random).random() >= rate:
+            log.info("shadow skipped (SHADOW_SAMPLE=%s)", rate)
             return None
         conn = conn or psycopg.connect(dsn, autocommit=True, prepare_threshold=None)
         if conn.execute("SELECT to_regclass('shadow_log')").fetchone()[0] is None:
             log.error("shadow_log missing: run registry.migrations.migrate")
             return None
         if ran_today(conn, farm_code) >= daily:
+            log.warning("shadow skipped: today's ceiling of %s runs (SHADOW_DAILY_LIMIT) is reached", daily)
             return None
         from router import answer_question_v2
         from router.prompt import PROMPT_VERSION
@@ -78,15 +80,18 @@ def run_shadow(dsn, farm_code, question, old, *, date_from=None, date_to=None, l
         old_kind, old_reason = compare.old_outcome(old)
         old_text = getattr(old, "text", "") or ""
         cls = compare.classify(old_kind, old_text, new_kind, new_text, new_error)
-        return conn.execute(
+        new_id = conn.execute(
             """INSERT INTO shadow_log (farm_code, question, filter_from, filter_to, old_kind, old_intent_source, old_reason, old_text, new_kind, new_code,
                                        new_metric, new_scope, new_text, new_error, model, prompt_version, llm_seconds, total_seconds, cost_usd,
                                        classification, needs_label)
                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
             (farm_code, question, date_from, date_to, old_kind, getattr(old, "intent_source", None), old_reason, old_text, new_kind, new_code, new_metric,
              scope, new_text, new_error, model, PROMPT_VERSION, llm_s, total, cost, cls, compare.needs_label(cls))).fetchone()[0]
+        log.info("shadow row %s logged: %s (new engine: %s)", new_id, cls, new_kind)
+        return new_id
     except Exception as e:                                               # shadow mode must never be able to hurt the real answer
-        log.error("shadow run failed: %s", type(e).__name__)
+        # Type, message and traceback, never the question or the DSN (a psycopg error message does not carry the password).
+        log.error("shadow run failed: %s: %s", type(e).__name__, str(e)[:300], exc_info=True)
         return None
     finally:
         if own and conn is not None:
@@ -100,6 +105,7 @@ def submit(dsn, farm_code, question, old, **kw):
     """Fire and forget: schedule run_shadow on the background pool and return immediately. Does nothing unless SHADOW_MODE=1."""
     if not enabled(kw.get("env")):
         return None
+    log.info("shadow run scheduled")
     fut = _POOL.submit(run_shadow, dsn, farm_code, question, old, **kw)
     _PENDING.append(fut)
     del _PENDING[:-50]

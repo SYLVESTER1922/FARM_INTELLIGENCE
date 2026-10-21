@@ -14,6 +14,7 @@ the earlier dashboard work.
 
 import base64
 import datetime
+import logging
 import os
 import random
 import time
@@ -73,6 +74,20 @@ def _parse_date(s):
         return datetime.date.fromisoformat(s)
     except ValueError:
         return None
+
+
+def _configure_logging():
+    """The app configured no logging, so Python printed only bare ERROR lines. Give the root logger a handler with time, level and logger name (a
+    no-op if one is already set), and say at start-up whether shadow mode is on, so its state is visible in Render's logs."""
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    if os.environ.get("SHADOW_MODE") == "1":
+        logging.getLogger("shadow").info(
+            "shadow mode is ON (SHADOW_SAMPLE=%s, SHADOW_DAILY_LIMIT=%s)", os.environ.get("SHADOW_SAMPLE", "1.0"), os.environ.get("SHADOW_DAILY_LIMIT", "200"))
+    elif "SHADOW_MODE" in os.environ:
+        logging.getLogger("shadow").warning("SHADOW_MODE is set to %r but shadow mode needs exactly '1'; it is OFF", os.environ["SHADOW_MODE"])
+
+
+_configure_logging()
 
 
 def _do_sync():
@@ -166,8 +181,9 @@ def _shadow(dsn, question, answer, date_from, date_to):
         from shadow import enabled, runner
         if enabled():
             runner.submit(dsn, FARM_CODE, question, answer, date_from=date_from, date_to=date_to)
-    except Exception:
-        pass
+    except Exception as e:
+        # Never changes the answer, but is no longer silent: an import or scheduling failure shows in the logs with its traceback.
+        logging.getLogger("shadow").error("shadow could not start: %s: %s", type(e).__name__, str(e)[:300], exc_info=True)
 
 
 def _report_button_on() -> bool:

@@ -267,3 +267,54 @@ def test_the_sample_drops_written_questions_and_puts_old_engine_misses_first(db,
     assert len(sample.sample_query_log(db, FARM, n=3)) == 3
     assert sample.export_sample(items, tmp_path / "s.csv") == len(items)
     assert "add_to_dev_set" in open(tmp_path / "s.csv", encoding="utf-8").read()
+
+
+# --------------------------------------------------------------------------------------------------- failures are visible
+def test_a_failed_shadow_run_logs_the_type_the_message_and_the_traceback_but_no_secret_or_question(caplog):
+    import logging
+    bad = "host=127.0.0.1 port=1 dbname=nope user=u password=hunter2secret connect_timeout=2"
+    with caplog.at_level(logging.INFO, logger="shadow"):
+        assert runner.run_shadow(bad, FARM, "a private question about Tendai", Old("12"), env={}) is None
+    rec, = [r for r in caplog.records if r.levelno == logging.ERROR]
+    text = rec.getMessage() + "".join(caplog.text)
+    assert "shadow run failed: OperationalError" in rec.getMessage() and rec.exc_info is not None
+    assert "hunter2secret" not in text and "private question" not in text
+
+
+def test_the_apps_shadow_hook_logs_instead_of_swallowing(monkeypatch, caplog):
+    import logging
+    from ui import app
+    monkeypatch.setenv("SHADOW_MODE", "1")
+    monkeypatch.setattr(runner, "submit", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("pool gone")))
+    with caplog.at_level(logging.ERROR, logger="shadow"):
+        app._shadow(TEST_DSN, Q, Old("12"), None, None)                                   # does not raise
+    rec, = caplog.records
+    assert "shadow could not start: RuntimeError: pool gone" in rec.getMessage() and rec.exc_info is not None
+
+
+def test_skips_and_successes_are_logged(db, caplog):
+    import logging
+    with caplog.at_level(logging.INFO, logger="shadow"):
+        run(db, Q, Old("12"), HEAD, env={"SHADOW_SAMPLE": "0"})
+        run(db, Q, Old("12"), HEAD, env={"SHADOW_DAILY_LIMIT": "1"})
+        run(db, Q, Old("12"), HEAD, env={"SHADOW_DAILY_LIMIT": "1"})
+    msgs = [r.getMessage() for r in caplog.records]
+    assert any("skipped (SHADOW_SAMPLE=0.0)" in m for m in msgs)
+    assert any(m.startswith("shadow row ") and "logged" in m for m in msgs)
+    assert any("ceiling of 1 runs" in m for m in msgs)
+
+
+@pytest.mark.parametrize("value,expect", [("1", "shadow mode is ON"), ('"1"', "needs exactly '1'"), ("1 ", "needs exactly '1'"), ("true", "needs exactly '1'")])
+def test_start_up_says_whether_shadow_mode_is_on_and_flags_a_value_that_does_not_count(monkeypatch, caplog, value, expect):
+    import logging
+    from ui import app
+    monkeypatch.setenv("SHADOW_MODE", value)
+    with caplog.at_level(logging.INFO, logger="shadow"):
+        app._configure_logging()
+    assert any(expect in r.getMessage() for r in caplog.records)
+
+
+def test_the_timezone_database_is_a_declared_dependency():
+    import pathlib
+    reqs = (pathlib.Path(__file__).resolve().parent.parent / "requirements.txt").read_text().lower()
+    assert "tzdata" in reqs                                  # resolver/periods.py builds ZoneInfo("Africa/Harare") at import time

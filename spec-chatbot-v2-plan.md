@@ -860,3 +860,12 @@ Migrations `005_sync_gates` and `006_shadow_mode` were applied to the production
 (including `query_log` at 343 and `labour_log` at 1,143). `GATED_SYNC` and `SHADOW_MODE` stay unset everywhere, so nothing uses the new tables yet.
 Rollback, only the new objects (not run): `DROP TABLE IF EXISTS wrong_answer_reports, shadow_log, gate_acks, gate_firings, data_snapshot, sync_runs, schema_migrations;`
 (indexes and sequences go with their tables). Row-level security is off on the new tables, as on the existing ones: check the Supabase API exposure of `public`.
+
+### 27.2 Shadow failures made visible (2026-10-21)
+
+The first live run wrote no `shadow_log` rows. A crash of the new engine itself would still write a row (`new_kind = error`), so the failure had to be before the insert: the
+shadow thread is the first place the production process imports `router`, `resolver`, `render` and `catalog` (the dashboard only imports `registry`), and `resolver/periods.py` builds
+`ZoneInfo("Africa/Harare")` at import time while `requirements.txt` had no `tzdata`. That is the leading suspect, unconfirmed. Whatever the cause, the code hid it: the app's `_shadow`
+hook swallowed every exception with no log, and `run_shadow` logged only the exception's type name. Now: failures log type, message and traceback (never the question or the DSN) under the
+`shadow` logger; the app configures logging at start-up (`%(asctime)s %(levelname)s %(name)s`) and says whether shadow mode is ON, or warns when `SHADOW_MODE` is set to anything other than
+exactly `1`; skips (sampling, daily ceiling) and each logged row are INFO lines; `tzdata` is in `requirements.txt`. Tests cover each. Needs a push and a manual Render deploy to take effect.
