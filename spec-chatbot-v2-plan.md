@@ -681,10 +681,10 @@ build yet.** Wait for the client's real top-20 wording (step 0.5): if mixed-lang
 way to remove a roughly 2% silent-wrong tail on that traffic; if they are common, the right fix is a speaker-reviewed lexicon and a real
 multilingual test set, not a guard that refuses them.
 
-### 25.6 Claude comparison
+### 25.6 Claude comparison: waived
 
-Decision: when an Anthropic key exists, run the Claude candidate on the **dev set only** (no variants, no locked set), then confirm the pin.
-No key exists yet (`ANTHROPIC_API_KEY` is unset; no key file). Nothing was run for Claude this round.
+Decision of 2026-10-20 (supersedes the earlier plan to run Claude on the dev set): **the Claude comparison is waived** because of Anthropic cost.
+gpt-4.1 with prompt v6 is the pinned model. Revisit only if quality or pricing changes. No Anthropic call was made, and none is planned.
 
 ### 25.7 Quota detection fix
 
@@ -704,10 +704,10 @@ Cost control from here: no paid run without Sylvester's go-ahead and a stated es
 | Eval cases: N per metric | **Cannot pass until Sylvester approves the 43 drafts** | approved cases meet N for 11 of 21 metrics; with the drafts 21 of 21 and 4 of 4 refusal classes |
 | Resolver and rendering tests | **Pass** | full suite passes; resolver and render line coverage 100% |
 | Dev wrong rate at most 2% | **Pass on the current 176 (tuned); to be re-judged on 219 with the drafts** | gpt-4.1, prompt v6: 171 of 176 correct, 0 wrong, 0 refused, 2.8% clarified, $0.0066 per question. On the 43 drafts, untuned: 1 wrong (2.3%), for Sylvester to judge |
-| Model chosen by bake-off and pinned | **Not met** | gpt-4.1 provisional; Claude needs a key, dev set only (25.6); the pin is confirmed on the locked set later |
+| Model chosen by bake-off and pinned | **Met (waived comparison), 2026-10-20** | gpt-4.1 with prompt v6, `json_schema` mode, pinned. Sylvester waived the Claude comparison because of Anthropic cost; revisit only if quality or pricing changes. No Anthropic call was made. The pin is still confirmed on the locked set later |
 
-**Gate A can be judged once three inputs arrive:** approval or edits of the 43 drafts, sign-off of the 5 remaining parity exemptions, and an
-Anthropic key (plus OpenAI credit). It is not met today.
+**Gate A can be judged once two inputs arrive:** approval or edits of the 43 drafts, and sign-off of the 5 remaining parity exemptions, then the
+final run over 219 cases.
 
 ### 25.9 The test suite spends OpenAI credit
 
