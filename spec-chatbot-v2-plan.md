@@ -850,3 +850,13 @@ default, background submit, the user always getting the old answer even when sha
 **Not done, and what stands between this and live (all need Sylvester's go-ahead; none was touched):** run `registry.migrations.migrate` on the Supabase database (creates
 `shadow_log` and `wrong_answer_reports`); make `OPENAI_API_KEY` available to the app process; set `SHADOW_MODE=1` (and `REPORT_BUTTON=1` for the pilot); a manual Render deploy,
 verified live. Not tested here: the background pool inside the real Gradio process, and the Supabase transaction pooler with a second connection per shadow run.
+
+### 27.1 Supabase migration for steps 7 and 8 (run 2026-10-20)
+
+Migrations `005_sync_gates` and `006_shadow_mode` were applied to the production Supabase database (pooler `aws-0-us-west-2.pooler.supabase.com:6543`, database
+`postgres`) with `registry.migrations.migrate_in_transaction(only=...)`: one transaction, a transaction-scoped lock, create-only SQL. Migrations 001 to 004 were NOT applied
+(they would add columns to `query_log` and create `farm_settings` and `llm_quota_log`; nothing in steps 7 and 8 needs them yet). Verified afterwards: the seven new tables exist
+(`schema_migrations`, `sync_runs`, `gate_firings`, `gate_acks`, `data_snapshot`, `shadow_log`, `wrong_answer_reports`), and the row count of each of the 23 existing tables is unchanged
+(including `query_log` at 343 and `labour_log` at 1,143). `GATED_SYNC` and `SHADOW_MODE` stay unset everywhere, so nothing uses the new tables yet.
+Rollback, only the new objects (not run): `DROP TABLE IF EXISTS wrong_answer_reports, shadow_log, gate_acks, gate_firings, data_snapshot, sync_runs, schema_migrations;`
+(indexes and sequences go with their tables). Row-level security is off on the new tables, as on the existing ones: check the Supabase API exposure of `public`.
