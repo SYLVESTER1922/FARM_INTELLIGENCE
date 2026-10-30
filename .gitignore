@@ -15,3 +15,8 @@ evals/client_questions/mapping-*
 *.pem
 *.key
 google-service-account*.json
+
+# Synthetic demo data and generator output: kept locally, not published
+/Netrisyl_Farm_Intelligence_Workbook.xlsx
+gen_scripts/*.xlsx
+gen_scripts/rows_dump.json
