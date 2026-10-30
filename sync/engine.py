@@ -1,3 +1,4 @@
+import itertools
 from dataclasses import dataclass, field
 
 import openpyxl
@@ -170,6 +171,61 @@ REVENUE_DROPDOWN_FIELDS = {
 }
 
 
+class _Rows:
+    """Where one table's INSERTs go during a sync. On a plain connection the statements are queued and sent together by flush() with
+    executemany (psycopg runs that in pipeline mode: one round trip for the batch instead of one per row). Anything else - the gates'
+    _Staging wrapper, whose execute() inspects every statement, or a retry after a failed batch - runs each statement as it is
+    issued, exactly as before. Batch-reference lookups are answered from one query per referenced table when batching."""
+
+    def __init__(self, conn, batched: bool):
+        self.conn, self.batched = conn, batched
+        self._pending, self._codes = [], {}
+        self.ok = not batched
+
+    def execute(self, sql, params=None):
+        if not self.batched:
+            return self.conn.execute(sql, params)
+        self._pending.append((sql, params))
+
+    def flush(self) -> bool:
+        """True if everything queued was written. False if the batch failed (it has been rolled back); the caller then runs the
+        table again row by row, so every per-row error is raised, caught and recorded exactly as it always was."""
+        if not self.batched:
+            return True
+        try:
+            with self.conn.cursor() as cur:
+                for sql, group in itertools.groupby(self._pending, key=lambda item: item[0]):
+                    cur.executemany(sql, [params for _, params in group])
+        except psycopg.Error:
+            self.conn.rollback()
+            return False
+        self.ok = True
+        return True
+
+    def batch_ref_exists(self, ref_table: str, batch_ref) -> bool:
+        if not self.batched or not isinstance(batch_ref, str):
+            return self.conn.execute(
+                f"SELECT 1 FROM {ref_table} WHERE batch_code = %s", (batch_ref,)
+            ).fetchone() is not None
+        if ref_table not in self._codes:
+            self._codes[ref_table] = {row[0] for row in self.conn.execute(f"SELECT batch_code FROM {ref_table}")}
+        return batch_ref in self._codes[ref_table]
+
+
+def _batch_modes(conn, errors=None):
+    """Yields where to send a table's INSERTs: first a batching _Rows, and only if its flush() failed a row-by-row one, after
+    discarding the errors the failed attempt recorded."""
+    mark = len(errors) if errors is not None else 0
+    if isinstance(conn, psycopg.Connection):
+        rows = _Rows(conn, batched=True)
+        yield rows
+        if rows.ok:
+            return
+        if errors is not None:
+            del errors[mark:]
+    yield _Rows(conn, batched=False)
+
+
 def _validate_dropdowns(table: str, record: dict, row_id: str,
                          dropdown_fields: dict, lists: dict, errors: list) -> bool:
     """Returns True if the record passes all dropdown checks; else appends
@@ -195,7 +251,7 @@ BATCH_REF_TABLE_BY_DOMAIN = {
 
 
 def _validate_batch_ref(table: str, record: dict, row_id: str,
-                         batch_ref_field: str, conn, errors: list) -> bool:
+                         batch_ref_field: str, rows: "_Rows", errors: list) -> bool:
     """For a nullable, polymorphic batch reference: if present, it must
     resolve in the batch table for that row's domain (piggery->pig_batches,
     poultry->poultry_batches). Other domains aren't checked - there's no
@@ -206,10 +262,7 @@ def _validate_batch_ref(table: str, record: dict, row_id: str,
     ref_table = BATCH_REF_TABLE_BY_DOMAIN.get(record["domain"])
     if ref_table is None:
         return True
-    exists = conn.execute(
-        f"SELECT 1 FROM {ref_table} WHERE batch_code = %s", (batch_ref,)
-    ).fetchone()
-    if exists is None:
+    if not rows.batch_ref_exists(ref_table, batch_ref):
         errors.append({
             "table": table, "row": row_id, "field": batch_ref_field,
             "value": batch_ref, "reason": f"no matching batch_code in {ref_table}",
@@ -284,33 +337,36 @@ def _sync_staff(wb, conn, farm_code: str, lists: dict, errors: list) -> int:
             active BOOLEAN
         )
     """)
-    written = 0
-    for record in records:
-        if not _validate_dropdowns("staff", record, record["staff_code"],
-                                    STAFF_DROPDOWN_FIELDS, lists, errors):
-            continue
-        conn.execute(
-            """
-            INSERT INTO staff (
-                staff_code, farm_code, full_name, role, primary_domain, pay_type,
-                rate, active
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (staff_code) DO UPDATE SET
-                farm_code = EXCLUDED.farm_code,
-                full_name = EXCLUDED.full_name,
-                role = EXCLUDED.role,
-                primary_domain = EXCLUDED.primary_domain,
-                pay_type = EXCLUDED.pay_type,
-                rate = EXCLUDED.rate,
-                active = EXCLUDED.active
-            """,
-            (
-                record["staff_code"], farm_code, record["full_name"], record["role"],
-                record["primary_domain"], record["pay_type"], record["rate"],
-                record["active"] == "Yes",
-            ),
-        )
-        written += 1
+    for b in _batch_modes(conn, errors):
+        written = 0
+        for record in records:
+            if not _validate_dropdowns("staff", record, record["staff_code"],
+                                        STAFF_DROPDOWN_FIELDS, lists, errors):
+                continue
+            b.execute(
+                """
+                INSERT INTO staff (
+                    staff_code, farm_code, full_name, role, primary_domain, pay_type,
+                    rate, active
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (staff_code) DO UPDATE SET
+                    farm_code = EXCLUDED.farm_code,
+                    full_name = EXCLUDED.full_name,
+                    role = EXCLUDED.role,
+                    primary_domain = EXCLUDED.primary_domain,
+                    pay_type = EXCLUDED.pay_type,
+                    rate = EXCLUDED.rate,
+                    active = EXCLUDED.active
+                """,
+                (
+                    record["staff_code"], farm_code, record["full_name"], record["role"],
+                    record["primary_domain"], record["pay_type"], record["rate"],
+                    record["active"] == "Yes",
+                ),
+            )
+            written += 1
+        if b.flush():
+            break
     return written
 
 
@@ -331,35 +387,38 @@ def _sync_pig_batches(wb, conn, farm_code: str, lists: dict, errors: list) -> in
             status TEXT
         )
     """)
-    written = 0
-    for record in records:
-        if not _validate_dropdowns("pig_batches", record, record["batch_code"],
-                                    PIG_BATCH_DROPDOWN_FIELDS, lists, errors):
-            continue
-        conn.execute(
-            """
-            INSERT INTO pig_batches (
-                batch_code, farm_code, pen, breed, start_date, start_count,
-                start_avg_kg, source, target_market_date, status
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (batch_code) DO UPDATE SET
-                farm_code = EXCLUDED.farm_code,
-                pen = EXCLUDED.pen,
-                breed = EXCLUDED.breed,
-                start_date = EXCLUDED.start_date,
-                start_count = EXCLUDED.start_count,
-                start_avg_kg = EXCLUDED.start_avg_kg,
-                source = EXCLUDED.source,
-                target_market_date = EXCLUDED.target_market_date,
-                status = EXCLUDED.status
-            """,
-            (
-                record["batch_code"], farm_code, record["pen"], record["breed"],
-                record["start_date"], record["start_count"], record["start_avg_kg"],
-                record["source"], record["target_market_date"], record["status"],
-            ),
-        )
-        written += 1
+    for b in _batch_modes(conn, errors):
+        written = 0
+        for record in records:
+            if not _validate_dropdowns("pig_batches", record, record["batch_code"],
+                                        PIG_BATCH_DROPDOWN_FIELDS, lists, errors):
+                continue
+            b.execute(
+                """
+                INSERT INTO pig_batches (
+                    batch_code, farm_code, pen, breed, start_date, start_count,
+                    start_avg_kg, source, target_market_date, status
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (batch_code) DO UPDATE SET
+                    farm_code = EXCLUDED.farm_code,
+                    pen = EXCLUDED.pen,
+                    breed = EXCLUDED.breed,
+                    start_date = EXCLUDED.start_date,
+                    start_count = EXCLUDED.start_count,
+                    start_avg_kg = EXCLUDED.start_avg_kg,
+                    source = EXCLUDED.source,
+                    target_market_date = EXCLUDED.target_market_date,
+                    status = EXCLUDED.status
+                """,
+                (
+                    record["batch_code"], farm_code, record["pen"], record["breed"],
+                    record["start_date"], record["start_count"], record["start_avg_kg"],
+                    record["source"], record["target_market_date"], record["status"],
+                ),
+            )
+            written += 1
+        if b.flush():
+            break
     return written
 
 
@@ -384,47 +443,50 @@ def _sync_pig_daily_log(wb, conn, errors: list) -> int:
             PRIMARY KEY (date, batch_code)
         )
     """)
-    written = 0
-    for record in records:
-        try:
-            conn.execute(
-                """
-                INSERT INTO pig_daily_log (
-                    date, batch_code, pen, feed_type, feed_kg, water_litres,
-                    deaths, culls, closing_count, pen_temp_c, pen_condition,
-                    notes, recorded_by
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (date, batch_code) DO UPDATE SET
-                    pen = EXCLUDED.pen,
-                    feed_type = EXCLUDED.feed_type,
-                    feed_kg = EXCLUDED.feed_kg,
-                    water_litres = EXCLUDED.water_litres,
-                    deaths = EXCLUDED.deaths,
-                    culls = EXCLUDED.culls,
-                    closing_count = EXCLUDED.closing_count,
-                    pen_temp_c = EXCLUDED.pen_temp_c,
-                    pen_condition = EXCLUDED.pen_condition,
-                    notes = EXCLUDED.notes,
-                    recorded_by = EXCLUDED.recorded_by
-                """,
-                (
-                    record["date"], record["batch_code"], record["pen"],
-                    record["feed_type"], record["feed_kg"], record["water_litres"],
-                    record["deaths"], record["culls"], record["closing_count"],
-                    record["pen_temp_c"], record["pen_condition"], record["notes"],
-                    record["recorded_by"],
-                ),
-            )
-        except psycopg.errors.ForeignKeyViolation:
-            conn.rollback()
-            errors.append({
-                "table": "pig_daily_log",
-                "row": f"{record['date']}/{record['batch_code']}",
-                "field": "batch_code", "value": record["batch_code"],
-                "reason": "no matching batch_code in pig_batches",
-            })
-            continue
-        written += 1
+    for b in _batch_modes(conn, errors):
+        written = 0
+        for record in records:
+            try:
+                b.execute(
+                    """
+                    INSERT INTO pig_daily_log (
+                        date, batch_code, pen, feed_type, feed_kg, water_litres,
+                        deaths, culls, closing_count, pen_temp_c, pen_condition,
+                        notes, recorded_by
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (date, batch_code) DO UPDATE SET
+                        pen = EXCLUDED.pen,
+                        feed_type = EXCLUDED.feed_type,
+                        feed_kg = EXCLUDED.feed_kg,
+                        water_litres = EXCLUDED.water_litres,
+                        deaths = EXCLUDED.deaths,
+                        culls = EXCLUDED.culls,
+                        closing_count = EXCLUDED.closing_count,
+                        pen_temp_c = EXCLUDED.pen_temp_c,
+                        pen_condition = EXCLUDED.pen_condition,
+                        notes = EXCLUDED.notes,
+                        recorded_by = EXCLUDED.recorded_by
+                    """,
+                    (
+                        record["date"], record["batch_code"], record["pen"],
+                        record["feed_type"], record["feed_kg"], record["water_litres"],
+                        record["deaths"], record["culls"], record["closing_count"],
+                        record["pen_temp_c"], record["pen_condition"], record["notes"],
+                        record["recorded_by"],
+                    ),
+                )
+            except psycopg.errors.ForeignKeyViolation:
+                conn.rollback()
+                errors.append({
+                    "table": "pig_daily_log",
+                    "row": f"{record['date']}/{record['batch_code']}",
+                    "field": "batch_code", "value": record["batch_code"],
+                    "reason": "no matching batch_code in pig_batches",
+                })
+                continue
+            written += 1
+        if b.flush():
+            break
     return written
 
 
@@ -443,38 +505,41 @@ def _sync_pig_weights(wb, conn, errors: list) -> int:
             PRIMARY KEY (date, batch_code)
         )
     """)
-    written = 0
-    for record in records:
-        try:
-            conn.execute(
-                """
-                INSERT INTO pig_weights (
-                    date, batch_code, sample_size, avg_weight_kg, min_weight_kg,
-                    max_weight_kg, age_days
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (date, batch_code) DO UPDATE SET
-                    sample_size = EXCLUDED.sample_size,
-                    avg_weight_kg = EXCLUDED.avg_weight_kg,
-                    min_weight_kg = EXCLUDED.min_weight_kg,
-                    max_weight_kg = EXCLUDED.max_weight_kg,
-                    age_days = EXCLUDED.age_days
-                """,
-                (
-                    record["date"], record["batch_code"], record["sample_size"],
-                    record["avg_weight_kg"], record["min_weight_kg"],
-                    record["max_weight_kg"], record["age_days"],
-                ),
-            )
-        except psycopg.errors.ForeignKeyViolation:
-            conn.rollback()
-            errors.append({
-                "table": "pig_weights",
-                "row": f"{record['date']}/{record['batch_code']}",
-                "field": "batch_code", "value": record["batch_code"],
-                "reason": "no matching batch_code in pig_batches",
-            })
-            continue
-        written += 1
+    for b in _batch_modes(conn, errors):
+        written = 0
+        for record in records:
+            try:
+                b.execute(
+                    """
+                    INSERT INTO pig_weights (
+                        date, batch_code, sample_size, avg_weight_kg, min_weight_kg,
+                        max_weight_kg, age_days
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (date, batch_code) DO UPDATE SET
+                        sample_size = EXCLUDED.sample_size,
+                        avg_weight_kg = EXCLUDED.avg_weight_kg,
+                        min_weight_kg = EXCLUDED.min_weight_kg,
+                        max_weight_kg = EXCLUDED.max_weight_kg,
+                        age_days = EXCLUDED.age_days
+                    """,
+                    (
+                        record["date"], record["batch_code"], record["sample_size"],
+                        record["avg_weight_kg"], record["min_weight_kg"],
+                        record["max_weight_kg"], record["age_days"],
+                    ),
+                )
+            except psycopg.errors.ForeignKeyViolation:
+                conn.rollback()
+                errors.append({
+                    "table": "pig_weights",
+                    "row": f"{record['date']}/{record['batch_code']}",
+                    "field": "batch_code", "value": record["batch_code"],
+                    "reason": "no matching batch_code in pig_batches",
+                })
+                continue
+            written += 1
+        if b.flush():
+            break
     return written
 
 
@@ -492,32 +557,35 @@ def _sync_sow_register(wb, conn, farm_code: str, lists: dict, errors: list) -> i
             status TEXT
         )
     """)
-    written = 0
-    for record in records:
-        if not _validate_dropdowns("sow_register", record, record["sow_tag"],
-                                    SOW_DROPDOWN_FIELDS, lists, errors):
-            continue
-        conn.execute(
-            """
-            INSERT INTO sow_register (
-                sow_tag, farm_code, breed, date_of_birth, parity,
-                body_condition_1_5, status
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (sow_tag) DO UPDATE SET
-                farm_code = EXCLUDED.farm_code,
-                breed = EXCLUDED.breed,
-                date_of_birth = EXCLUDED.date_of_birth,
-                parity = EXCLUDED.parity,
-                body_condition_1_5 = EXCLUDED.body_condition_1_5,
-                status = EXCLUDED.status
-            """,
-            (
-                record["sow_tag"], farm_code, record["breed"],
-                record["date_of_birth"], record["parity"],
-                record["body_condition_1_5"], record["status"],
-            ),
-        )
-        written += 1
+    for b in _batch_modes(conn, errors):
+        written = 0
+        for record in records:
+            if not _validate_dropdowns("sow_register", record, record["sow_tag"],
+                                        SOW_DROPDOWN_FIELDS, lists, errors):
+                continue
+            b.execute(
+                """
+                INSERT INTO sow_register (
+                    sow_tag, farm_code, breed, date_of_birth, parity,
+                    body_condition_1_5, status
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (sow_tag) DO UPDATE SET
+                    farm_code = EXCLUDED.farm_code,
+                    breed = EXCLUDED.breed,
+                    date_of_birth = EXCLUDED.date_of_birth,
+                    parity = EXCLUDED.parity,
+                    body_condition_1_5 = EXCLUDED.body_condition_1_5,
+                    status = EXCLUDED.status
+                """,
+                (
+                    record["sow_tag"], farm_code, record["breed"],
+                    record["date_of_birth"], record["parity"],
+                    record["body_condition_1_5"], record["status"],
+                ),
+            )
+            written += 1
+        if b.flush():
+            break
     return written
 
 
@@ -544,57 +612,60 @@ def _sync_breeding_farrowing(wb, conn, lists: dict, errors: list) -> int:
             PRIMARY KEY (sow_tag, service_date)
         )
     """)
-    written = 0
-    for record in records:
-        if not _validate_dropdowns("breeding_farrowing", record, record["sow_tag"],
-                                    FARROWING_DROPDOWN_FIELDS, lists, errors):
-            continue
-        try:
-            conn.execute(
-                """
-                INSERT INTO breeding_farrowing (
-                    sow_tag, boar_tag, service_date, service_type,
-                    pregnancy_confirmed, expected_farrow_date, farrow_date,
-                    born_alive, stillborn, mummified, avg_birth_weight_kg,
-                    wean_date, weaned_count, avg_wean_weight_kg, litter_batch_code
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (sow_tag, service_date) DO UPDATE SET
-                    boar_tag = EXCLUDED.boar_tag,
-                    service_type = EXCLUDED.service_type,
-                    pregnancy_confirmed = EXCLUDED.pregnancy_confirmed,
-                    expected_farrow_date = EXCLUDED.expected_farrow_date,
-                    farrow_date = EXCLUDED.farrow_date,
-                    born_alive = EXCLUDED.born_alive,
-                    stillborn = EXCLUDED.stillborn,
-                    mummified = EXCLUDED.mummified,
-                    avg_birth_weight_kg = EXCLUDED.avg_birth_weight_kg,
-                    wean_date = EXCLUDED.wean_date,
-                    weaned_count = EXCLUDED.weaned_count,
-                    avg_wean_weight_kg = EXCLUDED.avg_wean_weight_kg,
-                    litter_batch_code = EXCLUDED.litter_batch_code
-                """,
-                (
-                    record["sow_tag"], record["boar_tag"], record["service_date"],
-                    record["service_type"], record["pregnancy_confirmed"] == "Yes",
-                    record["expected_farrow_date"], record["farrow_date"],
-                    record["born_alive"], record["stillborn"], record["mummified"],
-                    record["avg_birth_weight_kg"], record["wean_date"],
-                    record["weaned_count"], record["avg_wean_weight_kg"],
-                    record["litter_batch_code"],
-                ),
-            )
-        except psycopg.errors.ForeignKeyViolation:
-            conn.rollback()
-            errors.append({
-                "table": "breeding_farrowing",
-                "row": f"{record['sow_tag']}/{record['service_date']}",
-                "field": "sow_tag_or_litter_batch_code",
-                "value": (record["sow_tag"], record["litter_batch_code"]),
-                "reason": "no matching sow_tag in sow_register or "
-                          "litter_batch_code in pig_batches",
-            })
-            continue
-        written += 1
+    for b in _batch_modes(conn, errors):
+        written = 0
+        for record in records:
+            if not _validate_dropdowns("breeding_farrowing", record, record["sow_tag"],
+                                        FARROWING_DROPDOWN_FIELDS, lists, errors):
+                continue
+            try:
+                b.execute(
+                    """
+                    INSERT INTO breeding_farrowing (
+                        sow_tag, boar_tag, service_date, service_type,
+                        pregnancy_confirmed, expected_farrow_date, farrow_date,
+                        born_alive, stillborn, mummified, avg_birth_weight_kg,
+                        wean_date, weaned_count, avg_wean_weight_kg, litter_batch_code
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (sow_tag, service_date) DO UPDATE SET
+                        boar_tag = EXCLUDED.boar_tag,
+                        service_type = EXCLUDED.service_type,
+                        pregnancy_confirmed = EXCLUDED.pregnancy_confirmed,
+                        expected_farrow_date = EXCLUDED.expected_farrow_date,
+                        farrow_date = EXCLUDED.farrow_date,
+                        born_alive = EXCLUDED.born_alive,
+                        stillborn = EXCLUDED.stillborn,
+                        mummified = EXCLUDED.mummified,
+                        avg_birth_weight_kg = EXCLUDED.avg_birth_weight_kg,
+                        wean_date = EXCLUDED.wean_date,
+                        weaned_count = EXCLUDED.weaned_count,
+                        avg_wean_weight_kg = EXCLUDED.avg_wean_weight_kg,
+                        litter_batch_code = EXCLUDED.litter_batch_code
+                    """,
+                    (
+                        record["sow_tag"], record["boar_tag"], record["service_date"],
+                        record["service_type"], record["pregnancy_confirmed"] == "Yes",
+                        record["expected_farrow_date"], record["farrow_date"],
+                        record["born_alive"], record["stillborn"], record["mummified"],
+                        record["avg_birth_weight_kg"], record["wean_date"],
+                        record["weaned_count"], record["avg_wean_weight_kg"],
+                        record["litter_batch_code"],
+                    ),
+                )
+            except psycopg.errors.ForeignKeyViolation:
+                conn.rollback()
+                errors.append({
+                    "table": "breeding_farrowing",
+                    "row": f"{record['sow_tag']}/{record['service_date']}",
+                    "field": "sow_tag_or_litter_batch_code",
+                    "value": (record["sow_tag"], record["litter_batch_code"]),
+                    "reason": "no matching sow_tag in sow_register or "
+                              "litter_batch_code in pig_batches",
+                })
+                continue
+            written += 1
+        if b.flush():
+            break
     return written
 
 
@@ -616,37 +687,40 @@ def _sync_poultry_batches(wb, conn, farm_code: str, lists: dict, errors: list) -
             status TEXT
         )
     """)
-    written = 0
-    for record in records:
-        if not _validate_dropdowns("poultry_batches", record, record["batch_code"],
-                                    POULTRY_BATCH_DROPDOWN_FIELDS, lists, errors):
-            continue
-        conn.execute(
-            """
-            INSERT INTO poultry_batches (
-                batch_code, farm_code, bird_type, breed, house, placement_date,
-                chicks_placed, chick_unit_cost, hatchery, target_off_date, status
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (batch_code) DO UPDATE SET
-                farm_code = EXCLUDED.farm_code,
-                bird_type = EXCLUDED.bird_type,
-                breed = EXCLUDED.breed,
-                house = EXCLUDED.house,
-                placement_date = EXCLUDED.placement_date,
-                chicks_placed = EXCLUDED.chicks_placed,
-                chick_unit_cost = EXCLUDED.chick_unit_cost,
-                hatchery = EXCLUDED.hatchery,
-                target_off_date = EXCLUDED.target_off_date,
-                status = EXCLUDED.status
-            """,
-            (
-                record["batch_code"], farm_code, record["bird_type"], record["breed"],
-                record["house"], record["placement_date"], record["chicks_placed"],
-                record["chick_unit_cost"], record["hatchery"],
-                record["target_off_date"], record["status"],
-            ),
-        )
-        written += 1
+    for b in _batch_modes(conn, errors):
+        written = 0
+        for record in records:
+            if not _validate_dropdowns("poultry_batches", record, record["batch_code"],
+                                        POULTRY_BATCH_DROPDOWN_FIELDS, lists, errors):
+                continue
+            b.execute(
+                """
+                INSERT INTO poultry_batches (
+                    batch_code, farm_code, bird_type, breed, house, placement_date,
+                    chicks_placed, chick_unit_cost, hatchery, target_off_date, status
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (batch_code) DO UPDATE SET
+                    farm_code = EXCLUDED.farm_code,
+                    bird_type = EXCLUDED.bird_type,
+                    breed = EXCLUDED.breed,
+                    house = EXCLUDED.house,
+                    placement_date = EXCLUDED.placement_date,
+                    chicks_placed = EXCLUDED.chicks_placed,
+                    chick_unit_cost = EXCLUDED.chick_unit_cost,
+                    hatchery = EXCLUDED.hatchery,
+                    target_off_date = EXCLUDED.target_off_date,
+                    status = EXCLUDED.status
+                """,
+                (
+                    record["batch_code"], farm_code, record["bird_type"], record["breed"],
+                    record["house"], record["placement_date"], record["chicks_placed"],
+                    record["chick_unit_cost"], record["hatchery"],
+                    record["target_off_date"], record["status"],
+                ),
+            )
+            written += 1
+        if b.flush():
+            break
     return written
 
 
@@ -675,54 +749,57 @@ def _sync_poultry_daily_log(wb, conn, errors: list) -> int:
             PRIMARY KEY (date, batch_code)
         )
     """)
-    written = 0
-    for record in records:
-        try:
-            conn.execute(
-                """
-                INSERT INTO poultry_daily_log (
-                    date, batch_code, age_days, deaths, culls, closing_birds,
-                    feed_type, feed_kg, water_litres, house_temp_c,
-                    litter_condition, lighting_hours, eggs_collected,
-                    eggs_cracked, eggs_dirty, notes, recorded_by
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (date, batch_code) DO UPDATE SET
-                    age_days = EXCLUDED.age_days,
-                    deaths = EXCLUDED.deaths,
-                    culls = EXCLUDED.culls,
-                    closing_birds = EXCLUDED.closing_birds,
-                    feed_type = EXCLUDED.feed_type,
-                    feed_kg = EXCLUDED.feed_kg,
-                    water_litres = EXCLUDED.water_litres,
-                    house_temp_c = EXCLUDED.house_temp_c,
-                    litter_condition = EXCLUDED.litter_condition,
-                    lighting_hours = EXCLUDED.lighting_hours,
-                    eggs_collected = EXCLUDED.eggs_collected,
-                    eggs_cracked = EXCLUDED.eggs_cracked,
-                    eggs_dirty = EXCLUDED.eggs_dirty,
-                    notes = EXCLUDED.notes,
-                    recorded_by = EXCLUDED.recorded_by
-                """,
-                (
-                    record["date"], record["batch_code"], record["age_days"],
-                    record["deaths"], record["culls"], record["closing_birds"],
-                    record["feed_type"], record["feed_kg"], record["water_litres"],
-                    record["house_temp_c"], record["litter_condition"],
-                    record["lighting_hours"], record["eggs_collected"],
-                    record["eggs_cracked"], record["eggs_dirty"], record["notes"],
-                    record["recorded_by"],
-                ),
-            )
-        except psycopg.errors.ForeignKeyViolation:
-            conn.rollback()
-            errors.append({
-                "table": "poultry_daily_log",
-                "row": f"{record['date']}/{record['batch_code']}",
-                "field": "batch_code", "value": record["batch_code"],
-                "reason": "no matching batch_code in poultry_batches",
-            })
-            continue
-        written += 1
+    for b in _batch_modes(conn, errors):
+        written = 0
+        for record in records:
+            try:
+                b.execute(
+                    """
+                    INSERT INTO poultry_daily_log (
+                        date, batch_code, age_days, deaths, culls, closing_birds,
+                        feed_type, feed_kg, water_litres, house_temp_c,
+                        litter_condition, lighting_hours, eggs_collected,
+                        eggs_cracked, eggs_dirty, notes, recorded_by
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (date, batch_code) DO UPDATE SET
+                        age_days = EXCLUDED.age_days,
+                        deaths = EXCLUDED.deaths,
+                        culls = EXCLUDED.culls,
+                        closing_birds = EXCLUDED.closing_birds,
+                        feed_type = EXCLUDED.feed_type,
+                        feed_kg = EXCLUDED.feed_kg,
+                        water_litres = EXCLUDED.water_litres,
+                        house_temp_c = EXCLUDED.house_temp_c,
+                        litter_condition = EXCLUDED.litter_condition,
+                        lighting_hours = EXCLUDED.lighting_hours,
+                        eggs_collected = EXCLUDED.eggs_collected,
+                        eggs_cracked = EXCLUDED.eggs_cracked,
+                        eggs_dirty = EXCLUDED.eggs_dirty,
+                        notes = EXCLUDED.notes,
+                        recorded_by = EXCLUDED.recorded_by
+                    """,
+                    (
+                        record["date"], record["batch_code"], record["age_days"],
+                        record["deaths"], record["culls"], record["closing_birds"],
+                        record["feed_type"], record["feed_kg"], record["water_litres"],
+                        record["house_temp_c"], record["litter_condition"],
+                        record["lighting_hours"], record["eggs_collected"],
+                        record["eggs_cracked"], record["eggs_dirty"], record["notes"],
+                        record["recorded_by"],
+                    ),
+                )
+            except psycopg.errors.ForeignKeyViolation:
+                conn.rollback()
+                errors.append({
+                    "table": "poultry_daily_log",
+                    "row": f"{record['date']}/{record['batch_code']}",
+                    "field": "batch_code", "value": record["batch_code"],
+                    "reason": "no matching batch_code in poultry_batches",
+                })
+                continue
+            written += 1
+        if b.flush():
+            break
     return written
 
 
@@ -740,37 +817,40 @@ def _sync_poultry_weights(wb, conn, errors: list) -> int:
             PRIMARY KEY (date, batch_code)
         )
     """)
-    written = 0
-    for record in records:
-        try:
-            conn.execute(
-                """
-                INSERT INTO poultry_weights (
-                    date, batch_code, age_days, sample_size, avg_weight_g,
-                    uniformity_pct
-                ) VALUES (%s, %s, %s, %s, %s, %s)
-                ON CONFLICT (date, batch_code) DO UPDATE SET
-                    age_days = EXCLUDED.age_days,
-                    sample_size = EXCLUDED.sample_size,
-                    avg_weight_g = EXCLUDED.avg_weight_g,
-                    uniformity_pct = EXCLUDED.uniformity_pct
-                """,
-                (
-                    record["date"], record["batch_code"], record["age_days"],
-                    record["sample_size"], record["avg_weight_g"],
-                    record["uniformity_pct"],
-                ),
-            )
-        except psycopg.errors.ForeignKeyViolation:
-            conn.rollback()
-            errors.append({
-                "table": "poultry_weights",
-                "row": f"{record['date']}/{record['batch_code']}",
-                "field": "batch_code", "value": record["batch_code"],
-                "reason": "no matching batch_code in poultry_batches",
-            })
-            continue
-        written += 1
+    for b in _batch_modes(conn, errors):
+        written = 0
+        for record in records:
+            try:
+                b.execute(
+                    """
+                    INSERT INTO poultry_weights (
+                        date, batch_code, age_days, sample_size, avg_weight_g,
+                        uniformity_pct
+                    ) VALUES (%s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (date, batch_code) DO UPDATE SET
+                        age_days = EXCLUDED.age_days,
+                        sample_size = EXCLUDED.sample_size,
+                        avg_weight_g = EXCLUDED.avg_weight_g,
+                        uniformity_pct = EXCLUDED.uniformity_pct
+                    """,
+                    (
+                        record["date"], record["batch_code"], record["age_days"],
+                        record["sample_size"], record["avg_weight_g"],
+                        record["uniformity_pct"],
+                    ),
+                )
+            except psycopg.errors.ForeignKeyViolation:
+                conn.rollback()
+                errors.append({
+                    "table": "poultry_weights",
+                    "row": f"{record['date']}/{record['batch_code']}",
+                    "field": "batch_code", "value": record["batch_code"],
+                    "reason": "no matching batch_code in poultry_batches",
+                })
+                continue
+            written += 1
+        if b.flush():
+            break
     return written
 
 
@@ -788,32 +868,35 @@ def _sync_plots(wb, conn, farm_code: str, lists: dict, errors: list) -> int:
             gps TEXT
         )
     """)
-    written = 0
-    for record in records:
-        if not _validate_dropdowns("plots", record, record["plot_code"],
-                                    PLOT_DROPDOWN_FIELDS, lists, errors):
-            continue
-        conn.execute(
-            """
-            INSERT INTO plots (
-                plot_code, farm_code, plot_name, hectares, soil_type,
-                irrigation_type, gps
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (plot_code) DO UPDATE SET
-                farm_code = EXCLUDED.farm_code,
-                plot_name = EXCLUDED.plot_name,
-                hectares = EXCLUDED.hectares,
-                soil_type = EXCLUDED.soil_type,
-                irrigation_type = EXCLUDED.irrigation_type,
-                gps = EXCLUDED.gps
-            """,
-            (
-                record["plot_code"], farm_code, record["plot_name"],
-                record["hectares"], record["soil_type"],
-                record["irrigation_type"], record["gps"],
-            ),
-        )
-        written += 1
+    for b in _batch_modes(conn, errors):
+        written = 0
+        for record in records:
+            if not _validate_dropdowns("plots", record, record["plot_code"],
+                                        PLOT_DROPDOWN_FIELDS, lists, errors):
+                continue
+            b.execute(
+                """
+                INSERT INTO plots (
+                    plot_code, farm_code, plot_name, hectares, soil_type,
+                    irrigation_type, gps
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (plot_code) DO UPDATE SET
+                    farm_code = EXCLUDED.farm_code,
+                    plot_name = EXCLUDED.plot_name,
+                    hectares = EXCLUDED.hectares,
+                    soil_type = EXCLUDED.soil_type,
+                    irrigation_type = EXCLUDED.irrigation_type,
+                    gps = EXCLUDED.gps
+                """,
+                (
+                    record["plot_code"], farm_code, record["plot_name"],
+                    record["hectares"], record["soil_type"],
+                    record["irrigation_type"], record["gps"],
+                ),
+            )
+            written += 1
+        if b.flush():
+            break
     return written
 
 
@@ -836,49 +919,52 @@ def _sync_plantings(wb, conn, lists: dict, errors: list) -> int:
             status TEXT
         )
     """)
-    written = 0
-    for record in records:
-        if not _validate_dropdowns("plantings", record, record["planting_code"],
-                                    PLANTING_DROPDOWN_FIELDS, lists, errors):
-            continue
-        try:
-            conn.execute(
-                """
-                INSERT INTO plantings (
-                    planting_code, plot_code, crop, variety, season,
-                    planting_date, area_ha, seed_kg, seed_cost,
-                    expected_harvest_date, expected_yield_tons_ha, status
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (planting_code) DO UPDATE SET
-                    plot_code = EXCLUDED.plot_code,
-                    crop = EXCLUDED.crop,
-                    variety = EXCLUDED.variety,
-                    season = EXCLUDED.season,
-                    planting_date = EXCLUDED.planting_date,
-                    area_ha = EXCLUDED.area_ha,
-                    seed_kg = EXCLUDED.seed_kg,
-                    seed_cost = EXCLUDED.seed_cost,
-                    expected_harvest_date = EXCLUDED.expected_harvest_date,
-                    expected_yield_tons_ha = EXCLUDED.expected_yield_tons_ha,
-                    status = EXCLUDED.status
-                """,
-                (
-                    record["planting_code"], record["plot_code"], record["crop"],
-                    record["variety"], record["season"], record["planting_date"],
-                    record["area_ha"], record["seed_kg"], record["seed_cost"],
-                    record["expected_harvest_date"],
-                    record["expected_yield_tons_ha"], record["status"],
-                ),
-            )
-        except psycopg.errors.ForeignKeyViolation:
-            conn.rollback()
-            errors.append({
-                "table": "plantings", "row": record["planting_code"],
-                "field": "plot_code", "value": record["plot_code"],
-                "reason": "no matching plot_code in plots",
-            })
-            continue
-        written += 1
+    for b in _batch_modes(conn, errors):
+        written = 0
+        for record in records:
+            if not _validate_dropdowns("plantings", record, record["planting_code"],
+                                        PLANTING_DROPDOWN_FIELDS, lists, errors):
+                continue
+            try:
+                b.execute(
+                    """
+                    INSERT INTO plantings (
+                        planting_code, plot_code, crop, variety, season,
+                        planting_date, area_ha, seed_kg, seed_cost,
+                        expected_harvest_date, expected_yield_tons_ha, status
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (planting_code) DO UPDATE SET
+                        plot_code = EXCLUDED.plot_code,
+                        crop = EXCLUDED.crop,
+                        variety = EXCLUDED.variety,
+                        season = EXCLUDED.season,
+                        planting_date = EXCLUDED.planting_date,
+                        area_ha = EXCLUDED.area_ha,
+                        seed_kg = EXCLUDED.seed_kg,
+                        seed_cost = EXCLUDED.seed_cost,
+                        expected_harvest_date = EXCLUDED.expected_harvest_date,
+                        expected_yield_tons_ha = EXCLUDED.expected_yield_tons_ha,
+                        status = EXCLUDED.status
+                    """,
+                    (
+                        record["planting_code"], record["plot_code"], record["crop"],
+                        record["variety"], record["season"], record["planting_date"],
+                        record["area_ha"], record["seed_kg"], record["seed_cost"],
+                        record["expected_harvest_date"],
+                        record["expected_yield_tons_ha"], record["status"],
+                    ),
+                )
+            except psycopg.errors.ForeignKeyViolation:
+                conn.rollback()
+                errors.append({
+                    "table": "plantings", "row": record["planting_code"],
+                    "field": "plot_code", "value": record["plot_code"],
+                    "reason": "no matching plot_code in plots",
+                })
+                continue
+            written += 1
+        if b.flush():
+            break
     return written
 
 
@@ -903,49 +989,52 @@ def _sync_field_operations(wb, conn, lists: dict, errors: list) -> int:
             PRIMARY KEY (date, planting_code, op_type)
         )
     """)
-    written = 0
-    for record in records:
-        if not _validate_dropdowns("field_operations", record, record["planting_code"],
-                                    FIELD_OPERATION_DROPDOWN_FIELDS, lists, errors):
-            continue
-        try:
-            conn.execute(
-                """
-                INSERT INTO field_operations (
-                    date, planting_code, op_type, product, rate, quantity, unit,
-                    input_cost, labour_hours, machine_hours, irrigation_mm,
-                    notes, recorded_by
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (date, planting_code, op_type) DO UPDATE SET
-                    product = EXCLUDED.product,
-                    rate = EXCLUDED.rate,
-                    quantity = EXCLUDED.quantity,
-                    unit = EXCLUDED.unit,
-                    input_cost = EXCLUDED.input_cost,
-                    labour_hours = EXCLUDED.labour_hours,
-                    machine_hours = EXCLUDED.machine_hours,
-                    irrigation_mm = EXCLUDED.irrigation_mm,
-                    notes = EXCLUDED.notes,
-                    recorded_by = EXCLUDED.recorded_by
-                """,
-                (
-                    record["date"], record["planting_code"], record["op_type"],
-                    record["product"], record["rate"], record["quantity"],
-                    record["unit"], record["input_cost"], record["labour_hours"],
-                    record["machine_hours"], record["irrigation_mm"],
-                    record["notes"], record["recorded_by"],
-                ),
-            )
-        except psycopg.errors.ForeignKeyViolation:
-            conn.rollback()
-            errors.append({
-                "table": "field_operations",
-                "row": f"{record['date']}/{record['planting_code']}",
-                "field": "planting_code", "value": record["planting_code"],
-                "reason": "no matching planting_code in plantings",
-            })
-            continue
-        written += 1
+    for b in _batch_modes(conn, errors):
+        written = 0
+        for record in records:
+            if not _validate_dropdowns("field_operations", record, record["planting_code"],
+                                        FIELD_OPERATION_DROPDOWN_FIELDS, lists, errors):
+                continue
+            try:
+                b.execute(
+                    """
+                    INSERT INTO field_operations (
+                        date, planting_code, op_type, product, rate, quantity, unit,
+                        input_cost, labour_hours, machine_hours, irrigation_mm,
+                        notes, recorded_by
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (date, planting_code, op_type) DO UPDATE SET
+                        product = EXCLUDED.product,
+                        rate = EXCLUDED.rate,
+                        quantity = EXCLUDED.quantity,
+                        unit = EXCLUDED.unit,
+                        input_cost = EXCLUDED.input_cost,
+                        labour_hours = EXCLUDED.labour_hours,
+                        machine_hours = EXCLUDED.machine_hours,
+                        irrigation_mm = EXCLUDED.irrigation_mm,
+                        notes = EXCLUDED.notes,
+                        recorded_by = EXCLUDED.recorded_by
+                    """,
+                    (
+                        record["date"], record["planting_code"], record["op_type"],
+                        record["product"], record["rate"], record["quantity"],
+                        record["unit"], record["input_cost"], record["labour_hours"],
+                        record["machine_hours"], record["irrigation_mm"],
+                        record["notes"], record["recorded_by"],
+                    ),
+                )
+            except psycopg.errors.ForeignKeyViolation:
+                conn.rollback()
+                errors.append({
+                    "table": "field_operations",
+                    "row": f"{record['date']}/{record['planting_code']}",
+                    "field": "planting_code", "value": record["planting_code"],
+                    "reason": "no matching planting_code in plantings",
+                })
+                continue
+            written += 1
+        if b.flush():
+            break
     return written
 
 
@@ -967,47 +1056,50 @@ def _sync_scouting_log(wb, conn, lists: dict, errors: list) -> int:
             PRIMARY KEY (date, planting_code)
         )
     """)
-    written = 0
-    for record in records:
-        if not _validate_dropdowns("scouting_log", record, record["planting_code"],
-                                    SCOUTING_DROPDOWN_FIELDS, lists, errors):
-            continue
-        try:
-            conn.execute(
-                """
-                INSERT INTO scouting_log (
-                    date, planting_code, growth_stage, issue_type, issue_name,
-                    severity_1_5, incidence_pct, soil_moisture, action_taken,
-                    scouted_by
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (date, planting_code) DO UPDATE SET
-                    growth_stage = EXCLUDED.growth_stage,
-                    issue_type = EXCLUDED.issue_type,
-                    issue_name = EXCLUDED.issue_name,
-                    severity_1_5 = EXCLUDED.severity_1_5,
-                    incidence_pct = EXCLUDED.incidence_pct,
-                    soil_moisture = EXCLUDED.soil_moisture,
-                    action_taken = EXCLUDED.action_taken,
-                    scouted_by = EXCLUDED.scouted_by
-                """,
-                (
-                    record["date"], record["planting_code"], record["growth_stage"],
-                    record["issue_type"], record["issue_name"],
-                    record["severity_1_5"], record["incidence_pct"],
-                    record["soil_moisture"], record["action_taken"],
-                    record["scouted_by"],
-                ),
-            )
-        except psycopg.errors.ForeignKeyViolation:
-            conn.rollback()
-            errors.append({
-                "table": "scouting_log",
-                "row": f"{record['date']}/{record['planting_code']}",
-                "field": "planting_code", "value": record["planting_code"],
-                "reason": "no matching planting_code in plantings",
-            })
-            continue
-        written += 1
+    for b in _batch_modes(conn, errors):
+        written = 0
+        for record in records:
+            if not _validate_dropdowns("scouting_log", record, record["planting_code"],
+                                        SCOUTING_DROPDOWN_FIELDS, lists, errors):
+                continue
+            try:
+                b.execute(
+                    """
+                    INSERT INTO scouting_log (
+                        date, planting_code, growth_stage, issue_type, issue_name,
+                        severity_1_5, incidence_pct, soil_moisture, action_taken,
+                        scouted_by
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (date, planting_code) DO UPDATE SET
+                        growth_stage = EXCLUDED.growth_stage,
+                        issue_type = EXCLUDED.issue_type,
+                        issue_name = EXCLUDED.issue_name,
+                        severity_1_5 = EXCLUDED.severity_1_5,
+                        incidence_pct = EXCLUDED.incidence_pct,
+                        soil_moisture = EXCLUDED.soil_moisture,
+                        action_taken = EXCLUDED.action_taken,
+                        scouted_by = EXCLUDED.scouted_by
+                    """,
+                    (
+                        record["date"], record["planting_code"], record["growth_stage"],
+                        record["issue_type"], record["issue_name"],
+                        record["severity_1_5"], record["incidence_pct"],
+                        record["soil_moisture"], record["action_taken"],
+                        record["scouted_by"],
+                    ),
+                )
+            except psycopg.errors.ForeignKeyViolation:
+                conn.rollback()
+                errors.append({
+                    "table": "scouting_log",
+                    "row": f"{record['date']}/{record['planting_code']}",
+                    "field": "planting_code", "value": record["planting_code"],
+                    "reason": "no matching planting_code in plantings",
+                })
+                continue
+            written += 1
+        if b.flush():
+            break
     return written
 
 
@@ -1028,44 +1120,47 @@ def _sync_harvest_log(wb, conn, lists: dict, errors: list) -> int:
             PRIMARY KEY (date, planting_code)
         )
     """)
-    written = 0
-    for record in records:
-        if not _validate_dropdowns("harvest_log", record, record["planting_code"],
-                                    HARVEST_DROPDOWN_FIELDS, lists, errors):
-            continue
-        try:
-            conn.execute(
-                """
-                INSERT INTO harvest_log (
-                    date, planting_code, bags, quantity_kg, moisture_pct, grade,
-                    field_loss_kg, storage_location, labour_hours
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (date, planting_code) DO UPDATE SET
-                    bags = EXCLUDED.bags,
-                    quantity_kg = EXCLUDED.quantity_kg,
-                    moisture_pct = EXCLUDED.moisture_pct,
-                    grade = EXCLUDED.grade,
-                    field_loss_kg = EXCLUDED.field_loss_kg,
-                    storage_location = EXCLUDED.storage_location,
-                    labour_hours = EXCLUDED.labour_hours
-                """,
-                (
-                    record["date"], record["planting_code"], record["bags"],
-                    record["quantity_kg"], record["moisture_pct"],
-                    record["grade"], record["field_loss_kg"],
-                    record["storage_location"], record["labour_hours"],
-                ),
-            )
-        except psycopg.errors.ForeignKeyViolation:
-            conn.rollback()
-            errors.append({
-                "table": "harvest_log",
-                "row": f"{record['date']}/{record['planting_code']}",
-                "field": "planting_code", "value": record["planting_code"],
-                "reason": "no matching planting_code in plantings",
-            })
-            continue
-        written += 1
+    for b in _batch_modes(conn, errors):
+        written = 0
+        for record in records:
+            if not _validate_dropdowns("harvest_log", record, record["planting_code"],
+                                        HARVEST_DROPDOWN_FIELDS, lists, errors):
+                continue
+            try:
+                b.execute(
+                    """
+                    INSERT INTO harvest_log (
+                        date, planting_code, bags, quantity_kg, moisture_pct, grade,
+                        field_loss_kg, storage_location, labour_hours
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (date, planting_code) DO UPDATE SET
+                        bags = EXCLUDED.bags,
+                        quantity_kg = EXCLUDED.quantity_kg,
+                        moisture_pct = EXCLUDED.moisture_pct,
+                        grade = EXCLUDED.grade,
+                        field_loss_kg = EXCLUDED.field_loss_kg,
+                        storage_location = EXCLUDED.storage_location,
+                        labour_hours = EXCLUDED.labour_hours
+                    """,
+                    (
+                        record["date"], record["planting_code"], record["bags"],
+                        record["quantity_kg"], record["moisture_pct"],
+                        record["grade"], record["field_loss_kg"],
+                        record["storage_location"], record["labour_hours"],
+                    ),
+                )
+            except psycopg.errors.ForeignKeyViolation:
+                conn.rollback()
+                errors.append({
+                    "table": "harvest_log",
+                    "row": f"{record['date']}/{record['planting_code']}",
+                    "field": "planting_code", "value": record["planting_code"],
+                    "reason": "no matching planting_code in plantings",
+                })
+                continue
+            written += 1
+        if b.flush():
+            break
     return written
 
 
@@ -1088,33 +1183,36 @@ def _sync_feed_inventory(wb, conn, lists: dict, errors: list) -> int:
             PRIMARY KEY (date, domain, feed_type)
         )
     """)
-    written = 0
-    for record in records:
-        conn.execute(
-            """
-            INSERT INTO feed_inventory (
-                date, domain, feed_type, opening_kg, received_kg, used_kg,
-                waste_kg, closing_kg, unit_cost_per_kg, supplier, batch_ref
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (date, domain, feed_type) DO UPDATE SET
-                opening_kg = EXCLUDED.opening_kg,
-                received_kg = EXCLUDED.received_kg,
-                used_kg = EXCLUDED.used_kg,
-                waste_kg = EXCLUDED.waste_kg,
-                closing_kg = EXCLUDED.closing_kg,
-                unit_cost_per_kg = EXCLUDED.unit_cost_per_kg,
-                supplier = EXCLUDED.supplier,
-                batch_ref = EXCLUDED.batch_ref
-            """,
-            (
-                record["date"], record["domain"], record["feed_type"],
-                record["opening_kg"], record["received_kg"], record["used_kg"],
-                record["waste_kg"], record["closing_kg"],
-                record["unit_cost_per_kg"], record["supplier"],
-                record["batch_ref"],
-            ),
-        )
-        written += 1
+    for b in _batch_modes(conn, errors):
+        written = 0
+        for record in records:
+            b.execute(
+                """
+                INSERT INTO feed_inventory (
+                    date, domain, feed_type, opening_kg, received_kg, used_kg,
+                    waste_kg, closing_kg, unit_cost_per_kg, supplier, batch_ref
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (date, domain, feed_type) DO UPDATE SET
+                    opening_kg = EXCLUDED.opening_kg,
+                    received_kg = EXCLUDED.received_kg,
+                    used_kg = EXCLUDED.used_kg,
+                    waste_kg = EXCLUDED.waste_kg,
+                    closing_kg = EXCLUDED.closing_kg,
+                    unit_cost_per_kg = EXCLUDED.unit_cost_per_kg,
+                    supplier = EXCLUDED.supplier,
+                    batch_ref = EXCLUDED.batch_ref
+                """,
+                (
+                    record["date"], record["domain"], record["feed_type"],
+                    record["opening_kg"], record["received_kg"], record["used_kg"],
+                    record["waste_kg"], record["closing_kg"],
+                    record["unit_cost_per_kg"], record["supplier"],
+                    record["batch_ref"],
+                ),
+            )
+            written += 1
+        if b.flush():
+            break
     return written
 
 
@@ -1131,24 +1229,27 @@ def _sync_weather_log(wb, conn) -> int:
             event TEXT
         )
     """)
-    for record in records:
-        conn.execute(
-            """
-            INSERT INTO weather_log (
-                date, rainfall_mm, temp_min_c, temp_max_c, humidity_pct, event
-            ) VALUES (%s, %s, %s, %s, %s, %s)
-            ON CONFLICT (date) DO UPDATE SET
-                rainfall_mm = EXCLUDED.rainfall_mm,
-                temp_min_c = EXCLUDED.temp_min_c,
-                temp_max_c = EXCLUDED.temp_max_c,
-                humidity_pct = EXCLUDED.humidity_pct,
-                event = EXCLUDED.event
-            """,
-            (
-                record["date"], record["rainfall_mm"], record["temp_min_c"],
-                record["temp_max_c"], record["humidity_pct"], record["event"],
-            ),
-        )
+    for b in _batch_modes(conn):
+        for record in records:
+            b.execute(
+                """
+                INSERT INTO weather_log (
+                    date, rainfall_mm, temp_min_c, temp_max_c, humidity_pct, event
+                ) VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (date) DO UPDATE SET
+                    rainfall_mm = EXCLUDED.rainfall_mm,
+                    temp_min_c = EXCLUDED.temp_min_c,
+                    temp_max_c = EXCLUDED.temp_max_c,
+                    humidity_pct = EXCLUDED.humidity_pct,
+                    event = EXCLUDED.event
+                """,
+                (
+                    record["date"], record["rainfall_mm"], record["temp_min_c"],
+                    record["temp_max_c"], record["humidity_pct"], record["event"],
+                ),
+            )
+        if b.flush():
+            break
     return len(records)
 
 
@@ -1168,43 +1269,46 @@ def _sync_labour_log(wb, conn, errors: list) -> int:
             PRIMARY KEY (date, staff_code)
         )
     """)
-    written = 0
-    for record in records:
-        row_id = f"{record['date']}/{record['staff_code']}"
-        if not _validate_batch_ref("labour_log", record, row_id, "batch_ref",
-                                    conn, errors):
-            continue
-        try:
-            conn.execute(
-                """
-                INSERT INTO labour_log (
-                    date, staff_code, domain, task, hours, overtime_hours,
-                    labour_cost, batch_ref
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (date, staff_code) DO UPDATE SET
-                    domain = EXCLUDED.domain,
-                    task = EXCLUDED.task,
-                    hours = EXCLUDED.hours,
-                    overtime_hours = EXCLUDED.overtime_hours,
-                    labour_cost = EXCLUDED.labour_cost,
-                    batch_ref = EXCLUDED.batch_ref
-                """,
-                (
-                    record["date"], record["staff_code"], record["domain"],
-                    record["task"], record["hours"], record["overtime_hours"],
-                    record["labour_cost"], record["batch_ref"],
-                ),
-            )
-        except psycopg.errors.ForeignKeyViolation:
-            conn.rollback()
-            errors.append({
-                "table": "labour_log",
-                "row": f"{record['date']}/{record['staff_code']}",
-                "field": "staff_code", "value": record["staff_code"],
-                "reason": "no matching staff_code in staff",
-            })
-            continue
-        written += 1
+    for b in _batch_modes(conn, errors):
+        written = 0
+        for record in records:
+            row_id = f"{record['date']}/{record['staff_code']}"
+            if not _validate_batch_ref("labour_log", record, row_id, "batch_ref",
+                                        b, errors):
+                continue
+            try:
+                b.execute(
+                    """
+                    INSERT INTO labour_log (
+                        date, staff_code, domain, task, hours, overtime_hours,
+                        labour_cost, batch_ref
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (date, staff_code) DO UPDATE SET
+                        domain = EXCLUDED.domain,
+                        task = EXCLUDED.task,
+                        hours = EXCLUDED.hours,
+                        overtime_hours = EXCLUDED.overtime_hours,
+                        labour_cost = EXCLUDED.labour_cost,
+                        batch_ref = EXCLUDED.batch_ref
+                    """,
+                    (
+                        record["date"], record["staff_code"], record["domain"],
+                        record["task"], record["hours"], record["overtime_hours"],
+                        record["labour_cost"], record["batch_ref"],
+                    ),
+                )
+            except psycopg.errors.ForeignKeyViolation:
+                conn.rollback()
+                errors.append({
+                    "table": "labour_log",
+                    "row": f"{record['date']}/{record['staff_code']}",
+                    "field": "staff_code", "value": record["staff_code"],
+                    "reason": "no matching staff_code in staff",
+                })
+                continue
+            written += 1
+        if b.flush():
+            break
     return written
 
 
@@ -1229,40 +1333,43 @@ def _sync_expenses(wb, conn, lists: dict, errors: list) -> int:
             PRIMARY KEY (date, domain, item)
         )
     """)
-    written = 0
-    for record in records:
-        row_id = f"{record['date']}/{record['domain']}/{record['item']}"
-        if not _validate_batch_ref("expenses", record, row_id, "batch_ref",
-                                    conn, errors):
-            continue
-        conn.execute(
-            """
-            INSERT INTO expenses (
-                date, domain, category, item, quantity, unit, unit_cost,
-                total_cost, supplier, payment_method, batch_ref,
-                allocation_note, recorded_by
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (date, domain, item) DO UPDATE SET
-                category = EXCLUDED.category,
-                quantity = EXCLUDED.quantity,
-                unit = EXCLUDED.unit,
-                unit_cost = EXCLUDED.unit_cost,
-                total_cost = EXCLUDED.total_cost,
-                supplier = EXCLUDED.supplier,
-                payment_method = EXCLUDED.payment_method,
-                batch_ref = EXCLUDED.batch_ref,
-                allocation_note = EXCLUDED.allocation_note,
-                recorded_by = EXCLUDED.recorded_by
-            """,
-            (
-                record["date"], record["domain"], record["category"],
-                record["item"], record["quantity"], record["unit"],
-                record["unit_cost"], record["total_cost"], record["supplier"],
-                record["payment_method"], record["batch_ref"],
-                record["allocation_note"], record["recorded_by"],
-            ),
-        )
-        written += 1
+    for b in _batch_modes(conn, errors):
+        written = 0
+        for record in records:
+            row_id = f"{record['date']}/{record['domain']}/{record['item']}"
+            if not _validate_batch_ref("expenses", record, row_id, "batch_ref",
+                                        b, errors):
+                continue
+            b.execute(
+                """
+                INSERT INTO expenses (
+                    date, domain, category, item, quantity, unit, unit_cost,
+                    total_cost, supplier, payment_method, batch_ref,
+                    allocation_note, recorded_by
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (date, domain, item) DO UPDATE SET
+                    category = EXCLUDED.category,
+                    quantity = EXCLUDED.quantity,
+                    unit = EXCLUDED.unit,
+                    unit_cost = EXCLUDED.unit_cost,
+                    total_cost = EXCLUDED.total_cost,
+                    supplier = EXCLUDED.supplier,
+                    payment_method = EXCLUDED.payment_method,
+                    batch_ref = EXCLUDED.batch_ref,
+                    allocation_note = EXCLUDED.allocation_note,
+                    recorded_by = EXCLUDED.recorded_by
+                """,
+                (
+                    record["date"], record["domain"], record["category"],
+                    record["item"], record["quantity"], record["unit"],
+                    record["unit_cost"], record["total_cost"], record["supplier"],
+                    record["payment_method"], record["batch_ref"],
+                    record["allocation_note"], record["recorded_by"],
+                ),
+            )
+            written += 1
+        if b.flush():
+            break
     return written
 
 
@@ -1288,45 +1395,48 @@ def _sync_revenue(wb, conn, lists: dict, errors: list) -> int:
             PRIMARY KEY (date, domain, buyer)
         )
     """)
-    written = 0
-    for record in records:
-        row_id = f"{record['date']}/{record['domain']}/{record['buyer']}"
-        if not _validate_dropdowns("revenue", record, row_id,
-                                    REVENUE_DROPDOWN_FIELDS, lists, errors):
-            continue
-        if not _validate_batch_ref("revenue", record, row_id, "batch_ref",
-                                    conn, errors):
-            continue
-        conn.execute(
-            """
-            INSERT INTO revenue (
-                date, domain, product, quantity, unit, unit_price, total_amount,
-                head_count, avg_weight_kg, grade, buyer, channel,
-                payment_status, batch_ref
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (date, domain, buyer) DO UPDATE SET
-                product = EXCLUDED.product,
-                quantity = EXCLUDED.quantity,
-                unit = EXCLUDED.unit,
-                unit_price = EXCLUDED.unit_price,
-                total_amount = EXCLUDED.total_amount,
-                head_count = EXCLUDED.head_count,
-                avg_weight_kg = EXCLUDED.avg_weight_kg,
-                grade = EXCLUDED.grade,
-                channel = EXCLUDED.channel,
-                payment_status = EXCLUDED.payment_status,
-                batch_ref = EXCLUDED.batch_ref
-            """,
-            (
-                record["date"], record["domain"], record["product"],
-                record["quantity"], record["unit"], record["unit_price"],
-                record["total_amount"], record["head_count"],
-                record["avg_weight_kg"], record["grade"], record["buyer"],
-                record["channel"], record["payment_status"],
-                record["batch_ref"],
-            ),
-        )
-        written += 1
+    for b in _batch_modes(conn, errors):
+        written = 0
+        for record in records:
+            row_id = f"{record['date']}/{record['domain']}/{record['buyer']}"
+            if not _validate_dropdowns("revenue", record, row_id,
+                                        REVENUE_DROPDOWN_FIELDS, lists, errors):
+                continue
+            if not _validate_batch_ref("revenue", record, row_id, "batch_ref",
+                                        b, errors):
+                continue
+            b.execute(
+                """
+                INSERT INTO revenue (
+                    date, domain, product, quantity, unit, unit_price, total_amount,
+                    head_count, avg_weight_kg, grade, buyer, channel,
+                    payment_status, batch_ref
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (date, domain, buyer) DO UPDATE SET
+                    product = EXCLUDED.product,
+                    quantity = EXCLUDED.quantity,
+                    unit = EXCLUDED.unit,
+                    unit_price = EXCLUDED.unit_price,
+                    total_amount = EXCLUDED.total_amount,
+                    head_count = EXCLUDED.head_count,
+                    avg_weight_kg = EXCLUDED.avg_weight_kg,
+                    grade = EXCLUDED.grade,
+                    channel = EXCLUDED.channel,
+                    payment_status = EXCLUDED.payment_status,
+                    batch_ref = EXCLUDED.batch_ref
+                """,
+                (
+                    record["date"], record["domain"], record["product"],
+                    record["quantity"], record["unit"], record["unit_price"],
+                    record["total_amount"], record["head_count"],
+                    record["avg_weight_kg"], record["grade"], record["buyer"],
+                    record["channel"], record["payment_status"],
+                    record["batch_ref"],
+                ),
+            )
+            written += 1
+        if b.flush():
+            break
     return written
 
 
@@ -1352,42 +1462,45 @@ def _sync_health_log(wb, conn, errors: list) -> int:
             PRIMARY KEY (date, batch_ref, event_type)
         )
     """)
-    written = 0
-    for record in records:
-        row_id = f"{record['date']}/{record['batch_ref']}/{record['event_type']}"
-        if not _validate_batch_ref("health_log", record, row_id, "batch_ref",
-                                    conn, errors):
-            continue
-        conn.execute(
-            """
-            INSERT INTO health_log (
-                date, domain, batch_ref, animal_tag, event_type, symptom,
-                diagnosis, product, dose, animals_treated, cost,
-                withdrawal_until, outcome, administered_by
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (date, batch_ref, event_type) DO UPDATE SET
-                domain = EXCLUDED.domain,
-                animal_tag = EXCLUDED.animal_tag,
-                symptom = EXCLUDED.symptom,
-                diagnosis = EXCLUDED.diagnosis,
-                product = EXCLUDED.product,
-                dose = EXCLUDED.dose,
-                animals_treated = EXCLUDED.animals_treated,
-                cost = EXCLUDED.cost,
-                withdrawal_until = EXCLUDED.withdrawal_until,
-                outcome = EXCLUDED.outcome,
-                administered_by = EXCLUDED.administered_by
-            """,
-            (
-                record["date"], record["domain"], record["batch_ref"],
-                record["animal_tag"], record["event_type"], record["symptom"],
-                record["diagnosis"], record["product"], record["dose"],
-                record["animals_treated"], record["cost"],
-                record["withdrawal_until"], record["outcome"],
-                record["administered_by"],
-            ),
-        )
-        written += 1
+    for b in _batch_modes(conn, errors):
+        written = 0
+        for record in records:
+            row_id = f"{record['date']}/{record['batch_ref']}/{record['event_type']}"
+            if not _validate_batch_ref("health_log", record, row_id, "batch_ref",
+                                        b, errors):
+                continue
+            b.execute(
+                """
+                INSERT INTO health_log (
+                    date, domain, batch_ref, animal_tag, event_type, symptom,
+                    diagnosis, product, dose, animals_treated, cost,
+                    withdrawal_until, outcome, administered_by
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (date, batch_ref, event_type) DO UPDATE SET
+                    domain = EXCLUDED.domain,
+                    animal_tag = EXCLUDED.animal_tag,
+                    symptom = EXCLUDED.symptom,
+                    diagnosis = EXCLUDED.diagnosis,
+                    product = EXCLUDED.product,
+                    dose = EXCLUDED.dose,
+                    animals_treated = EXCLUDED.animals_treated,
+                    cost = EXCLUDED.cost,
+                    withdrawal_until = EXCLUDED.withdrawal_until,
+                    outcome = EXCLUDED.outcome,
+                    administered_by = EXCLUDED.administered_by
+                """,
+                (
+                    record["date"], record["domain"], record["batch_ref"],
+                    record["animal_tag"], record["event_type"], record["symptom"],
+                    record["diagnosis"], record["product"], record["dose"],
+                    record["animals_treated"], record["cost"],
+                    record["withdrawal_until"], record["outcome"],
+                    record["administered_by"],
+                ),
+            )
+            written += 1
+        if b.flush():
+            break
     return written
 
 
@@ -1399,15 +1512,18 @@ def _sync_list_values(conn, lists: dict) -> int:
             PRIMARY KEY (list_name, value)
         )
     """)
-    count = 0
-    for list_name, values in lists.items():
-        for value in values:
-            conn.execute(
-                """
-                INSERT INTO list_values (list_name, value) VALUES (%s, %s)
-                ON CONFLICT (list_name, value) DO NOTHING
-                """,
-                (list_name, value),
-            )
-            count += 1
+    for b in _batch_modes(conn):
+        count = 0
+        for list_name, values in lists.items():
+            for value in values:
+                b.execute(
+                    """
+                    INSERT INTO list_values (list_name, value) VALUES (%s, %s)
+                    ON CONFLICT (list_name, value) DO NOTHING
+                    """,
+                    (list_name, value),
+                )
+                count += 1
+        if b.flush():
+            break
     return count
