@@ -10,3 +10,8 @@ evals/results/
 evals/client_questions/questions*.csv
 evals/client_questions/mapping-*
 .coverage
+.env
+.env.*
+*.pem
+*.key
+google-service-account*.json
