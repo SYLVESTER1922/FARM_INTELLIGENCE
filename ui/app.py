@@ -288,16 +288,22 @@ def export_chat(history: list):
     return path
 
 
-def farm_snapshot_markdown(date_from=None, date_to=None) -> str:
-    """A compact 2-line read of the same four headline cards the Dashboard
-    page already computes (queries.fetch_dashboard_stats) - reused, not
-    duplicated, for the Chat page's left-sidebar snapshot."""
+def farm_snapshot_html(date_from=None, date_to=None) -> str:
+    """The same four headline cards the Dashboard page already computes
+    (queries.fetch_dashboard_stats) - reused, not duplicated - as a compact
+    row of four small stat chips above the chat."""
     try:
         conn = _dashboard_conn()
         cards = queries.fetch_dashboard_stats(conn, date_from=date_from, date_to=date_to)
     except Exception as e:
-        return f"*Could not load farm snapshot: {str(e)[:150]}*"
-    return "  \n".join(f"{c['icon']} **{c['value']}** {c['label']}" for c in cards)
+        return f'<div class="np-card">Could not load farm snapshot: {str(e)[:150]}</div>'
+    chips = "".join(
+        f'<div class="np-chip" title="{c["label"]}">'
+        f'<span class="np-chip-value">{c["value"]}</span>'
+        f'<span class="np-chip-label">{c["icon"]} {c["label"]}</span></div>'
+        for c in cards
+    )
+    return f'<div class="np-chips">{chips}</div>'
 
 
 def about_farm_html() -> str:
@@ -764,6 +770,22 @@ def load_domain_summary(domain, date_from=None, date_to=None):
 # Layout
 # ---------------------------------------------------------------------------
 CUSTOM_CSS = """
+/* Palette shared by every page (the Chat page's stylesheet in ui/theme.py reads these). */
+:root {
+    --fi-bg: #F7F4EC;
+    --fi-card: #ffffff;
+    --fi-border: #e5e7eb;
+    --fi-text: #1B2A4E;
+    --fi-muted: #4b5563;
+    --fi-green: #2F6D3A;
+    --fi-green-dark: #1F4A28;
+    --fi-green-tint: #eaf2ec;
+    --fi-gold: #C9A227;
+    --fi-gold-text: #8a6d12;
+    --fi-red: #B23A2E;
+    --fi-radius: 16px;
+    --fi-shadow: 0 1px 3px rgba(27, 42, 78, 0.08), 0 4px 12px rgba(27, 42, 78, 0.05);
+}
 .gradio-container {
     font-family: 'Plus Jakarta Sans', 'Helvetica Neue', system-ui, sans-serif !important;
     width: 100% !important;
@@ -1094,7 +1116,7 @@ def build_interface() -> gr.Blocks:
                         dash_fcr_plot = gr.Plot(label="", show_label=False)
                 pages.append(page_dashboard)
 
-                # ---- Chat (navy/gold, 1:3:1 three-column layout) ------------
+                # ---- Chat (light theme, centred chat + slim side panel) -----
                 with gr.Column(visible=False, elem_id="np-chat") as page_chat:
                     gr.HTML(chat_theme.chat_header_html(_image_data_uri(_NI_LOGO_PATH)))
 
@@ -1104,61 +1126,64 @@ def build_interface() -> gr.Blocks:
                     search_history_state = gr.State({})
                     search_order_state = gr.State([])
 
-                    with gr.Row():
-                        # LEFT SIDEBAR - farm snapshot, recent searches, export
-                        with gr.Column(scale=1, min_width=220):
-                            gr.HTML('<div class="eyebrow">Farm Snapshot</div>')
-                            snapshot_md = gr.Markdown("Loading...")
-                            gr.HTML('<div class="eyebrow">Recent Searches</div>')
-                            history_dropdown = gr.Dropdown(
-                                choices=[], label="Click to replay",
-                                interactive=True, allow_custom_value=False,
-                                show_label=False,
-                            )
-                            gr.HTML('<div class="eyebrow">Tools</div>')
-                            export_btn = gr.Button("📥 Export Chat", size="sm", variant="secondary")
+                    with gr.Row(elem_classes=["np-layout"]):
+                        # CENTRE - snapshot chips, tools, chat, composer, follow-ups
+                        with gr.Column(scale=3, min_width=0, elem_id="np-main"):
+                            snapshot_html = gr.HTML()
+                            with gr.Row(elem_id="np-toolbar"):
+                                export_btn = gr.Button("📥 Export", size="sm", variant="secondary", elem_classes=["np-tool"])
+                                report_btn = gr.Button("🚩 Report wrong answer", size="sm", variant="secondary", elem_classes=["np-tool"], visible=_report_button_on())
                             export_file = gr.File(label="Download", visible=False)
-                            report_btn = gr.Button("🚩 Report wrong answer", size="sm", variant="secondary", visible=_report_button_on())
-                            report_note = gr.Textbox(placeholder="What was wrong? (optional)", show_label=False, visible=_report_button_on())
-                            report_status = gr.Markdown("", visible=_report_button_on())
-
-                        # CENTER - chat, input row, follow-ups
-                        with gr.Column(scale=3):
-                            chatbot = gr.Chatbot(height=440, show_label=False)
-                            with gr.Row():
+                            with gr.Group(visible=False, elem_classes=["np-report-panel"]) as report_panel:
+                                report_note = gr.Textbox(placeholder="What was wrong? (optional)", show_label=False)
+                                report_submit = gr.Button("Send report", size="sm", variant="secondary")
+                                report_status = gr.Markdown("")
+                            chatbot = gr.Chatbot(
+                                height=480, show_label=False, elem_id="np-chatbot",
+                                placeholder="### Ask about your farm\nPick an example or type your own question below.",
+                                examples=[{"text": q, "display_text": q[:1].upper() + q[1:]}
+                                          for q in _followup_pool()[:4]],
+                            )
+                            with gr.Row(elem_id="np-composer"):
                                 chat_msg = gr.Textbox(
-                                    placeholder="Ask about your farm's piggery, poultry, or "
-                                                 "crops data (or use 🎤)...",
-                                    show_label=False, scale=5,
+                                    placeholder="Ask about your piggery, poultry or crops...",
+                                    show_label=False, container=False, lines=1, max_lines=4,
+                                    scale=1, elem_id="np-msg",
                                 )
                                 chat_mic = gr.Audio(
                                     sources=["microphone"], type="filepath",
-                                    label="🎤", scale=1, min_width=90,
+                                    show_label=False, container=False, scale=0,
+                                    min_width=56, elem_id="np-mic",
                                 )
-                                chat_send_btn = gr.Button("Send", scale=1, variant="primary")
-                            gr.HTML('<div class="eyebrow">💡 Suggested follow-ups</div>')
-                            with gr.Row():
+                                chat_send_btn = gr.Button("Send", scale=0, variant="primary", elem_id="np-send")
+                            gr.HTML('<div class="np-fup-label">💡 Suggested follow-ups</div>')
+                            with gr.Row(elem_id="np-followups"):
                                 _initial_fups = get_followup_suggestions()
                                 fup1 = gr.Button(_initial_fups[0], size="sm")
                                 fup2 = gr.Button(_initial_fups[1], size="sm")
                                 fup3 = gr.Button(_initial_fups[2], size="sm")
 
-                        # RIGHT SIDEBAR - about the farm, quick lookup, alerts
-                        with gr.Column(scale=1, min_width=220):
-                            gr.HTML('<div class="eyebrow">About the Farm</div>')
-                            about_html = gr.HTML()
-                            gr.HTML('<div class="eyebrow">Quick Lookup</div>')
-                            lookup_kind = gr.Radio(
-                                choices=["Pen", "Batch", "Debtor"], value="Batch",
-                                show_label=False,
-                            )
-                            lookup_value = gr.Textbox(
-                                placeholder="e.g. PIG-B01 or Pen 1", show_label=False,
-                            )
-                            lookup_btn = gr.Button("Look Up", size="sm", variant="secondary")
-                            lookup_result = gr.Markdown("")
-                            gr.HTML('<div class="eyebrow">Top Alerts</div>')
+                        # SIDE PANEL - alerts always visible, the rest collapsed
+                        with gr.Column(scale=1, min_width=240, elem_id="np-side"):
+                            gr.HTML('<div class="np-side-title">Top Alerts</div>')
                             alerts_html = gr.HTML()
+                            with gr.Accordion("🕘 Recent searches", open=False):
+                                history_dropdown = gr.Dropdown(
+                                    choices=[], label="Click to replay",
+                                    interactive=True, allow_custom_value=False,
+                                )
+                            with gr.Accordion("🔎 Quick lookup", open=False):
+                                lookup_kind = gr.Radio(
+                                    choices=["Pen", "Batch", "Debtor"], value="Batch",
+                                    label="Look up a",
+                                )
+                                lookup_value = gr.Textbox(
+                                    placeholder="e.g. PIG-B01 or Pen 1", show_label=False,
+                                )
+                                lookup_btn = gr.Button("Look Up", size="sm", variant="secondary")
+                                lookup_result = gr.Markdown("")
+                            with gr.Accordion("🏡 About the farm", open=False):
+                                about_html = gr.HTML()
 
                     _chat_turn_inputs = [chat_msg, chat_state, search_history_state,
                                           search_order_state, date_from_box, date_to_box]
@@ -1185,7 +1210,21 @@ def build_interface() -> gr.Blocks:
                          history_dropdown, fup1, fup2, fup3, chat_mic],
                     ).then(lambda h: h, [chat_state], [chatbot])
 
-                    report_btn.click(_report_wrong, [chat_state, report_note], [report_status])
+                    report_btn.click(lambda: gr.update(visible=True), None, [report_panel])
+                    report_submit.click(_report_wrong, [chat_state, report_note], [report_status])
+
+                    def _example_respond(evt: gr.SelectData, ch, sh, so, dfs, dts):
+                        # The empty-state example chips: same turn as typing the question.
+                        value = evt.value
+                        text = value.get("text") if isinstance(value, dict) else str(value)
+                        return _chat_respond(text, ch, sh, so, dfs, dts)
+
+                    chatbot.example_select(
+                        _example_respond,
+                        [chat_state, search_history_state, search_order_state,
+                         date_from_box, date_to_box],
+                        _chat_turn_outputs,
+                    ).then(lambda h: h, [chat_state], [chatbot])
 
                     for fup_btn in (fup1, fup2, fup3):
                         fup_btn.click(
@@ -1308,7 +1347,7 @@ def build_interface() -> gr.Blocks:
             domain_summary_html,
             settings_info,
             sync_status_md,
-            snapshot_md, about_html, alerts_html,
+            snapshot_html, about_html, alerts_html,
         ]
 
         def load_all(date_from_str="", date_to_str="", domain="piggery"):
@@ -1333,7 +1372,7 @@ def build_interface() -> gr.Blocks:
             breeding_info, breeding_rows = load_breeding(date_from, date_to)
             domain_summary = load_domain_summary(domain, date_from, date_to)
             settings_info = load_settings()
-            snapshot = farm_snapshot_markdown(date_from, date_to)
+            snapshot = farm_snapshot_html(date_from, date_to)
             about = about_farm_html()
             alerts = top_alerts_html(date_from, date_to)
 
@@ -1419,5 +1458,5 @@ if __name__ == "__main__":
         server_name="0.0.0.0",
         server_port=int(os.environ.get("PORT", 7860)),
         theme=theme,
-        css=CUSTOM_CSS + chat_theme.CHAT_NAVY_CSS,
+        css=CUSTOM_CSS + chat_theme.CHAT_CSS,
     )
